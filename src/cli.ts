@@ -42,7 +42,7 @@ const NPM = new Set(NPM_COMMANDS.trim().split(/,\s+/));
 const USAGE = `upm ${pkg.version} — a minimal npm-compatible package manager
 
 Usage
-  upm install [--production] [--frozen-lockfile] [--verify]    (also i; ci is frozen)
+  upm [install] [--production] [--frozen-lockfile] [--verify]    (also i; ci is frozen)
   upm add <spec>... [--dev | --optional] [--exact] [-w <workspace>]
   upm remove <name>... [-w <workspace>]    (also uninstall, rm, r, un)
   upm dedupe
@@ -462,10 +462,12 @@ export async function main(argv: string[]): Promise<number> {
     write("stdout", `${pkg.version}\n`);
     return 0;
   }
-  if (cli.help || cli.command === undefined) {
+  if (cli.help) {
     write("stdout", `${help("stdout")}\n`);
     return 0;
   }
+  // As in pnpm, `upm` alone installs.
+  cli.command ??= "install";
   if (NPM.has(cli.command)) {
     const { command, specs, json, help: _help, dir: _dir, ...own } = cli;
     if (json || Object.keys(own).length > 0) return usage(`only --dir goes before ${command}`);
