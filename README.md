@@ -122,8 +122,8 @@ upm remove nanoid
 
 There is no `update` command yet. Use `add` with a new version or range to change a
 package. `dedupe` is not an update command: it prefers already-locked versions.
-To choose fresh versions for the whole project, remove `upm.lock` and install
-again. This can change any version allowed by `package.json`.
+To choose fresh versions for the whole project, remove `upm.lock` and `node_modules`,
+then install again. This can change any version allowed by `package.json`.
 
 ### Install from a tarball
 
@@ -294,10 +294,18 @@ upm ci --omit=dev                    # the same, in npm's words
 project. It does not select versions or rewrite the lockfile. Missing cached
 packages still need to be downloaded, so this is not an offline mode.
 
+An install that links `node_modules` from `upm.lock` leaves a copy of it in
+`node_modules/.upm.lock`, as npm and pnpm keep one. When `upm.lock` is missing and that
+copy still matches `package.json`, `upm install` (and `dedupe`) writes it back and goes on
+from it: a tree that is already installed is then up to date without the store or the
+network. If `package.json` has changed, the copy is ignored and the install resolves as if
+there were no `node_modules`. `upm lock` and `--frozen-lockfile` never read the copy.
+
 Registry documents that upm reads while resolving are kept in the store's `metadata`
 directory, under paths named after the registry and package
 (`metadata/registry.npmjs.org/@scope/name/`), so deleting a directory forgets those
-documents. A full document is kept cut down to the fields upm reads. A kept document is used
+documents. A full document is kept cut down to the fields upm reads, and each notes where its
+versions are, so a pick parses only the versions it looks at. A kept document is used
 without a request within the `max-age` the registry sent (five minutes on npmjs), and, while
 `min-release-age` is on, for as long as it was fetched after the cutoff: any version it lacks
 is too new to pick. After that, upm asks with its ETag and reuses it on a `304`. A tag

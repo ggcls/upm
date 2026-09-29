@@ -8,6 +8,7 @@
 // touched. Node only; nothing here for a runtime without `fetch`'s dispatcher.
 import type { LookupAddress } from "node:dns";
 import { builtin } from "./builtin.ts";
+import { hasNode } from "./runtime.ts";
 
 interface LookupOptions {
   family?: number;
@@ -85,12 +86,16 @@ export function cacheLookups(): Promise<void> | undefined {
 
 /**
  * `fetch` with our agent, for the registry and the store. The global dispatcher is not
- * touched: a host process that calls into upm keeps its own for its own requests. Plain
- * `fetch` until `cacheLookups` has made the agent, or where it could not.
+ * touched: a host process that calls into upm keeps its own for its own requests. The agent
+ * is made before the first request, so a run that asks nothing, a resolve from kept
+ * documents say, never loads the fetch machinery; plain `fetch` where it could not be made.
  */
 export function fetching(): typeof fetch {
-  return (input, init) =>
-    fetch(input, agent ? ({ ...init, dispatcher: agent } as RequestInit) : init);
+  return async (input, init) => {
+    const lookups = cacheLookups();
+    if (lookups) await lookups;
+    return await fetch(input, agent ? ({ ...init, dispatcher: agent } as RequestInit) : init);
+  };
 }
 
 /**
@@ -101,7 +106,8 @@ export function fetching(): typeof fetch {
  */
 async function install(): Promise<void> {
   const global = globalThis as unknown as Record<symbol, object | undefined>;
-  if (typeof fetch !== "function" || global[DISPATCHER]) return;
+  // Off Node there is no undici to find, and a page's `connect-src` would see the probe.
+  if (!hasNode || typeof fetch !== "function" || global[DISPATCHER]) return;
   // undici makes its default agent on the first fetch; a `data:` url is one that goes nowhere.
   await fetch("data:,");
   const made = global[DISPATCHER] as object | undefined;

@@ -866,7 +866,13 @@ describe("exec", () => {
       expect(requests.some((url) => url.startsWith("/lib"))).toBe(false);
       const [project] = await readdir(join(dir, "home", ".upm", "exec"));
       const installed = join(dir, "home", ".upm", "exec", project!, "node_modules");
-      expect((await readdir(installed)).sort()).toEqual([".bin", ".upm", ".upm.json", "hi"]);
+      expect((await readdir(installed)).sort()).toEqual([
+        ".bin",
+        ".upm",
+        ".upm.json",
+        ".upm.lock",
+        "hi",
+      ]);
       expect(await readdir(work)).not.toContain("node_modules");
 
       // The same versions from another registry are another project, and that registry is asked.
@@ -1029,11 +1035,13 @@ describe("startup budget", () => {
   it("keeps the startup module graph within its budget", async () => {
     // Without a compile-cache hit, every reachable source module needs type stripping.
     // Re-measure startup before raising this budget. Pools should load only when used.
-    // 138,791 minified bytes over 27 modules when the count moved from source bytes (437,989).
+    // 138,791 minified bytes over 27 modules when the count moved from source bytes (437,989);
+    // 141,619 with the registry's version index and the lockfile kept in node_modules,
+    // `--help` unchanged cached and uncached (40/41 and 106/106 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(140_000);
+    expect(bytes).toBeLessThanOrEqual(142_000);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

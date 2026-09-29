@@ -147,7 +147,8 @@ These need a scope decision, not just a patch:
   with that consumer's peer range. `--verify` reports such conflicts; it cannot fix them.
 - An alias does not supply a peer under the package's real name.
 - `dedupe` prefers versions already locked; it is not an upgrade strategy. A fresh resolve
-  requires removing the lockfile (`upm update` is the url tarball gap above).
+  requires removing the lockfile and `node_modules`, whose copy of the lockfile an install
+  takes back (`upm update` is the url tarball gap above).
 - The tarball spool is Node-only (it runs in the unpack worker); the portable tar reader
   still buffers whole files.
 - Off Node, version picking has no target Node version for `engines.node`. Add an explicit
@@ -177,7 +178,8 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   Start at `split` and `writePart` in `src/unpack.ts`.
 - Registry threads at pool creation are a wash on a big tree and cost a one-package install
   most of its time ([thread start results][start]); what would make that start free is a
-  cheaper thread boot, most of which is the worker's first load of the fetch machinery.
+  cheaper thread boot and first request, most of which is the thread's first load of the
+  fetch machinery (at its first request, so a walk over kept documents never pays it).
   Measure `tiny` cold and `nuxt` cold together. Start at `START_AT` in `src/registry-pool.ts`
   and `src/registry-worker.ts`.
 - Fewer threads (unpack, registry) save CPU at a small wall cost on a many-core machine and are
@@ -199,10 +201,18 @@ Unranked: take a fresh profile before choosing one. Use [perf.md](perf.md) for e
   over kept documents took 297 ms, against 326 ms with zstd level 1, for 60 MB on disk
   against 19 MB. Full packuments are trimmed by structure (`trimPackument`) to a
   fifth to a half, at about the cost of one `JSON.parse` of them, with a cold `nuxt` or `next`
-  install unchanged; a trim of the abbreviated documents cost a cold resolve 18% and is not
-  done. The release-age window made `upm lock` over documents past their `max-age` 299 ms
-  where revalidating them took 993 ms (`next`: 214 against 624). Writing documents after the
-  walk, where nothing waits on them, is untried.
+  install unchanged; the same trim of the abbreviated documents keeps 85% of their bytes (the
+  `dist` signatures stay) at 1.5 times the cost of the index scan, and is not done. The
+  release-age window made `upm lock` over documents past their `max-age` 299 ms where
+  revalidating them took 993 ms (`next`: 214 against 624). Writing documents after the walk,
+  where nothing waits on them, is untried.
+- A kept document's head says where each version sits (`indexVersions`), so a warm pick
+  parses only the manifests it reads, but the whole file is still read. Reading the head and
+  then only those slices, as pnpm 12 does, would save the rest of the read, its buffer and the
+  collection after it: about a sixth of a registry thread's busy time on the vlt `babylon`
+  fixture, and nothing on the smaller ones, where the threads already wait on the walk. It
+  needs a file handle kept per view, or a reopen that can find the file replaced since.
+  Start at `get` in `src/metadata.ts` and `viewOf` in `src/registry.ts`.
 - For large archives, check both many-file and few-file shapes. Helper startup and retained
   buffers can cost more than parallel writes save. Include peak memory in the result.
 - For warm installs, profile planning, messages and index work before adding more threads.

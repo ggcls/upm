@@ -87,6 +87,13 @@ the `.upm` entry names — without reading the graph. Both trust the state's `en
 what a resolution is a function of (a new `.npmrc` key that changes hosts, say) must be added
 to the inputs (`inputsOf` in `src/api.ts`), or the short check lies.
 
+The tree also keeps a copy of the lockfile it was last linked from (`node_modules/.upm.lock`).
+With no lockfile, an install writes it back only when it still describes package.json, as
+`sameTree` decides for any lockfile; a copy that does not is ignored, never used to keep
+versions, so a changed package.json still resolves as if there were no tree. The copy is a
+lockfile, not proof of the tree: the state still decides what is on disk. A frozen install
+never reads it, and a tree another manager's lockfile changed keeps none.
+
 Shared hardlinks make writes affect other projects. Treat installed content as
 immutable. Integrity must pass before untrusted archive content is written to the
 shared store, and an index must not expose an unfinished package. Content becomes
@@ -112,7 +119,9 @@ prove concurrent deletion safe.
 
 Metadata parsing shortcuts must select the real registry member, never a lookalike
 nested in publisher-controlled data. Use full parsing when the shortcut is unsure.
-Test hostile documents as well as normal registry output.
+Test hostile documents as well as normal registry output. A kept document's index is
+believed about a version it lacks, not only where one sits, so it is only ever written by the
+structural scan of the same bytes, in the same file.
 
 Threads are an optional execution strategy, not a different resolver or installer.
 Keep local and pooled results equivalent, including failure and shutdown behavior.
