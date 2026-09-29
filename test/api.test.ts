@@ -417,7 +417,7 @@ describe("api", () => {
       server.on("request", (request) => void requests.push(request.url ?? ""));
     });
     /** The install resolved: the lockfile was written from a walk, not taken from the tree. */
-    const resolved = () => lines.some((line) => line.startsWith(`wrote ${lockFile()} — `));
+    const resolved = () => lines.some((line) => line.startsWith("wrote upm.lock · "));
 
     it("takes the tree's lockfile back, with no store and no registry, while package.json matches", async () => {
       await writeFile(join(dir, "package.json"), '{"name":"demo","dependencies":{"nanoid":"^5"}}');
@@ -432,7 +432,7 @@ describe("api", () => {
       expect(await upm.install(base)).toMatchObject({ packages: 1, upToDate: true });
       expect(requests).toEqual([]);
       expect(await readFile(lockFile(), "utf8")).toBe(text);
-      expect(lines).toContain(`wrote ${lockFile()} from the tree in node_modules`);
+      expect(lines).toContain("wrote upm.lock ← node_modules");
       // Written back, it is the lockfile again: the next install is the ordinary no-op.
       expect((await upm.install(base)).upToDate).toBe(true);
 
@@ -619,7 +619,7 @@ describe("api", () => {
     await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^5" } }));
     const seen: [string, upm.LogLevel][] = [];
     await upm.lock({ ...base, log: (message, level) => seen.push([message, level]) });
-    expect(seen.at(-1)).toEqual([`wrote ${join(dir, "upm.lock")}`, "info"]);
+    expect(seen.at(-1)).toEqual(["wrote upm.lock · 1 pkgs", "info"]);
   });
 
   it("lists and runs scripts, in workspace order", async () => {
@@ -767,6 +767,28 @@ describe("tarball dependencies", () => {
     await writeFile(join(dir, "package.json"), JSON.stringify({ optionalDependencies }));
     expect(await upm.install(base)).toMatchObject({ packages: 0, otherPlatforms: 2 });
     expect(served).toEqual(["/files/aix-1.0.0.tgz"]);
+  });
+
+  it("ends its progress done when an optional's download fails", async () => {
+    const opt = '{"name":"opt","version":"1.0.0"}';
+    files["/files/opt-1.0.0.tgz"] = makeTarball([{ path: "package.json", data: opt }]);
+    const optionalDependencies = { opt: `${registry()}/files/opt-1.0.0.tgz` };
+    const manifest = { dependencies: { nanoid: "^5" }, optionalDependencies };
+    await writeFile(join(dir, "package.json"), JSON.stringify(manifest));
+    await upm.lock(base);
+    // Locked, then gone: a fresh store has to download it, and cannot.
+    delete files["/files/opt-1.0.0.tgz"];
+    const seen: upm.Progress[] = [];
+    const fresh = {
+      ...base,
+      store: join(dir, "fresh"),
+      onProgress: (p: upm.Progress) => seen.push(p),
+    };
+    await upm.install(fresh);
+    expect(lines).toContainEqual(expect.stringContaining("skipped optional opt@1.0.0"));
+    const last = (phase: string) => seen.filter((p) => p.phase === phase).at(-1);
+    expect(last("fetch")).toEqual({ phase: "fetch", done: 1, total: 1 });
+    expect(last("link")).toEqual({ phase: "link", done: 1, total: 1 });
   });
 
   describe("a local tarball changed in place", () => {

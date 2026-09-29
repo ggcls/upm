@@ -1,5 +1,6 @@
 // Materialize node_modules. One `.upm` entry per subgraph key holds the real files,
 // hardlinked from the per-file CAS; everything else is a relative symlink. IDEA.md 5.4.
+import type { Progress } from "./api.ts";
 import { builtin } from "./builtin.ts";
 import { storeKeys } from "./keys.ts";
 import { createLimiter } from "./limit.ts";
@@ -52,6 +53,8 @@ export interface LinkOptions {
   };
   /** The local tarballs' stamps, for the state file: see `InstallState.tarballs`. */
   tarballs?: InstallState["tarballs"];
+  /** Told as each entry is built or found in place. */
+  onProgress?: (progress: Progress) => void;
   /** The proof of the workspace set, for the state file: see `InstallState.workspaces`. */
   workspaces?: InstallState["workspaces"];
 }
@@ -336,11 +339,17 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   // The first failure is thrown only once every build has settled: one still writing under
   // its temp name would outlive the throw and race the caller's retry. None starts after it.
   const failures: unknown[] = [];
+  let built = 0;
+  let total = wanted.size;
   await Promise.all(
     [...wanted].map(([id, entry]) =>
       limit(async () => {
         await fates.get(id);
-        if (!wanted.has(id)) return;
+        // Dropped after the count was taken: out of the total, so the last entry reads as done.
+        if (!wanted.has(id)) {
+          options.onProgress?.({ phase: "link", done: built, total: --total });
+          return;
+        }
         // Its dependencies too: a dropped optional must not be linked, so it has to be known.
         for (const [name, version] of Object.entries(allDeps(entry.pkg))) {
           if (name !== entry.pkg.name) await fates.get(`${name}@${version}`);
@@ -351,7 +360,9 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
           }
           pool = await asking;
         }
-        if (failures.length === 0) await materialize(entry);
+        if (failures.length > 0) return;
+        await materialize(entry);
+        options.onProgress?.({ phase: "link", done: ++built, total });
       }).catch((error: unknown) => void failures.push(error)),
     ),
   );

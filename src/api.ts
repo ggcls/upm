@@ -84,6 +84,16 @@ export type { Added, Group };
 export type LogLevel = "info" | "warn" | "debug";
 
 /**
+ * How far a command has come, called once per package. `resolve` counts picks with no total
+ * yet; `fetch` counts tarballs in the store, `link` entries in `.upm`. The two overlap.
+ */
+export interface Progress {
+  phase: "resolve" | "fetch" | "link";
+  done: number;
+  total?: number;
+}
+
+/**
  * The `code` on an error a command rejects with, where a caller can act on it. A filesystem's
  * or a worker's own code can still come through; match on codes, never on messages.
  */
@@ -192,6 +202,8 @@ export interface DedupeOptions extends ProjectOptions, RegistryAccess, StoreAcce
   production?: boolean;
   /** Check the tree on disk instead of trusting its state (its shape, not its bytes). */
   verify?: boolean;
+  /** Counts to draw a progress bar from, as the command goes. */
+  onProgress?: (progress: Progress) => void;
   experimental?: Experimental;
 }
 
@@ -222,6 +234,8 @@ export interface RemoveOptions extends DedupeOptions, WorkspaceOptions {}
 export interface LockOptions extends ProjectOptions, RegistryAccess, StoreAccess {
   /** Write the lockfile. Default true; false only returns it. */
   write?: boolean;
+  /** Only `resolve`: a lock fetches and links nothing. */
+  onProgress?: (progress: Progress) => void;
   experimental?: Pick<Experimental, "resolvePool">;
 }
 
@@ -552,8 +566,9 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   const pool = linkPool(ctx, state === undefined);
   const store = openStore(ctx, options.verify);
   trace("store");
+  const progress = options.onProgress;
   const walk = {
-    onPick: prefetch(ctx, dir, store, pool?.picked),
+    onPick: counted(prefetch(ctx, dir, store, pool?.picked), progress),
     tarball: tarballReader(ctx, dir, store),
   };
   const lock = await plan(ctx, project, walk, edit?.registry, state?.tarballs);
@@ -605,10 +620,16 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   }
 
   const fill = async (into: Store): Promise<void> => {
+    // A skipped optional leaves the total, so a finished fill reads as done.
+    let fetched = 0;
+    let total = wanted.length;
+    const tell = () => progress?.({ phase: "fetch", done: fetched, total });
     await Promise.all(
       nearestFirst(resolution, wanted).map(async (pkg) => {
         try {
           await into.ensure(tarballOf(dir, pkg.resolved, pkg.source), pkg.integrity);
+          fetched++;
+          tell();
         } catch (error) {
           // A failure inside an optional subtree must never fail the install.
           if (!pkg.optional && pkg.source !== undefined) {
@@ -618,6 +639,8 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
           // the resolution changes.
           if (!pkg.optional || (error as { code?: string }).code === "EOFFLINE") throw error;
           log(`skipped optional ${pkg.name}@${pkg.version}: ${describe(error)}`, "warn");
+          total--;
+          tell();
         }
       }),
     ).finally(into.flush);
@@ -654,6 +677,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
     hash,
     pool: pool?.ask,
     awaiting: filling && store.pending,
+    onProgress: progress,
     inputs:
       inputs === undefined
         ? undefined
@@ -735,7 +759,7 @@ async function restoreLock(ctx: Context, project: Project, state?: InstallState)
   }
   await writeLockfile(dir, text);
   ctx.source = { path: source.path };
-  ctx.log(`wrote ${source.path} from the tree in node_modules`, "info");
+  ctx.log(`wrote ${LOCKFILE} ← node_modules`, "info");
 }
 
 /**
@@ -898,6 +922,19 @@ function prefetch(
         return false;
       })(),
     );
+  };
+}
+
+/** `onPick`, counting each pick for `onProgress` too. */
+function counted(
+  onPick: ResolveOptions["onPick"],
+  progress?: (progress: Progress) => void,
+): ResolveOptions["onPick"] {
+  if (!progress) return onPick;
+  let done = 0;
+  return (pkg, from, libc) => {
+    progress({ phase: "resolve", done: ++done });
+    onPick?.(pkg, from, libc);
   };
 }
 
@@ -1441,7 +1478,7 @@ async function resolveLock(
     if (dropped > 0) log(`dropped ${dropped} packages`, "info");
   }
   await writeLockfile(dir, lock);
-  log(`wrote ${builtin.path.join(dir, LOCKFILE)} — ${counts(lock)}`, "info");
+  log(`wrote ${LOCKFILE} · ${counts(lock)}`, "info");
   return lock;
 }
 
@@ -1461,7 +1498,7 @@ async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile
   const { foreign } = lockSource(ctx, dir);
   if (foreign) {
     const locked = await foreignLock(ctx, project, foreign);
-    ctx.log(`${foreign} is up to date — ${counts(locked)}`, "info");
+    ctx.log(`✓ ${foreign} · ${counts(locked)}`, "info");
     return locked;
   }
   const existing = await currentLock(ctx, dir);
@@ -1469,7 +1506,7 @@ async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile
   const tarball = tarballReader(ctx, dir, store);
   const moved = existing ? await movedIn(ctx, dir, existing, tarball) : [];
   if (existing && moved.length === 0 && sameTree(existing, manifest, workspaces)) {
-    ctx.log(`${LOCKFILE} is up to date — ${counts(existing)}`, "info");
+    ctx.log(`✓ ${LOCKFILE} · ${counts(existing)}`, "info");
     return existing;
   }
 
@@ -1479,6 +1516,7 @@ async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile
     locked: keep(existing, registry.baseFor, moved),
     workspaces: tops(project),
     tarball,
+    onPick: counted(undefined, options.onProgress),
   }).finally(() => {
     registry.close();
     store.close();
@@ -1487,10 +1525,12 @@ async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile
   const lock = toLockfile(resolution, registry.baseFor);
   const text = formatLockfile(lock); // checked here, whether it is written or not
   for (const warning of resolution.warnings) ctx.log(warning, "warn");
-  ctx.log(counts(lock), "info");
-  if (options.write === false) return lock;
+  if (options.write === false) {
+    ctx.log(counts(lock), "info");
+    return lock;
+  }
   await writeLockfile(dir, text);
-  ctx.log(`wrote ${builtin.path.join(dir, LOCKFILE)}`, "info");
+  ctx.log(`wrote ${LOCKFILE} · ${counts(lock)}`, "info");
   return lock;
 }
 
@@ -1756,10 +1796,13 @@ async function foreignLock(ctx: Context, project: Project, file: ForeignFile): P
 function counts(lock: Lockfile): string {
   // Derived flags, as an install would see them, not stored ones.
   const { packages, optional, dev } = lockCounts(lock);
-  const n = Object.keys(lock.workspaces ?? {}).length;
-  const workspaces = n > 0 ? `, ${n} workspace${n === 1 ? "" : "s"}` : "";
+  const workspaces = Object.keys(lock.workspaces ?? {}).length;
   // Every platform's packages, so this is larger than what any one install materializes.
-  return `${packages} packages, ${optional} optional, ${dev} dev${workspaces}`;
+  const parts = [`${packages} pkgs`];
+  if (optional > 0) parts.push(`${optional} opt`);
+  if (dev > 0) parts.push(`${dev} dev`);
+  if (workspaces > 0) parts.push(`${workspaces} ws`);
+  return parts.join(" · ");
 }
 
 /** A registry with threads to stop once the resolving is done. */
