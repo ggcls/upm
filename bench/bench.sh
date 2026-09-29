@@ -211,7 +211,7 @@ trap sweep_cores EXIT
 # whatever was left there last. Skipped when UPM_CLI points somewhere else.
 if [[ " $RUNNERS " == *" upm "* && "$UPM_CLI" == "$UPM_ROOT/dist/upm.mjs" ]]; then
   echo "bench: building upm dist/..."
-  ( cd "$UPM_ROOT" && npm run build ) >"$LOGDIR/upm-build.log" 2>&1 \
+  ( cd "$UPM_ROOT" && node ./upm run build ) >"$LOGDIR/upm-build.log" 2>&1 \
     || die "upm build failed, see $LOGDIR/upm-build.log"
 fi
 
