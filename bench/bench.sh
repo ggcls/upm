@@ -9,7 +9,8 @@
 # Results go to results/<stamp>.jsonl, one JSON object per timed run, and the charts beside
 # them, one per phase: <stamp>.<phase>.svg, .<phase>.memory.svg and .<phase>.cpu.svg,
 # plus <stamp>.size.svg for each manager's size on disk.
-# A full suite also refreshes the committed charts/<phase>.svg, charts/size.svg and the like.
+# A full suite also refreshes the committed charts/<phase>.svg and the like; any run of every
+# manager refreshes charts/size.svg, so `-f tiny --cold 1 --warm 0 --repeat 0` is enough for it.
 # Tables: node report.ts results/<stamp>.jsonl
 set -euo pipefail
 
@@ -313,6 +314,10 @@ if [ "$CHART" = 1 ]; then
   # Only a full suite on the default registry replaces the committed charts/ the README links to.
   full=0
   [ "$RUNNERS" = "$ALL_RUNNERS" ] && [ "$FIXTURES" = "$ALL_FIXTURES" ] && [ "$REGISTRY" = npm ] && full=1
+  # A manager's size depends on neither fixture nor registry, so any run of every manager
+  # refreshes the committed size chart.
+  all=0
+  [ "$RUNNERS" = "$ALL_RUNNERS" ] && all=1
   for measure in time memory cpu; do
     node "$HERE/chart.ts" "$OUT" --measure "$measure" \
       || echo "bench: $measure chart failed, results are still in $OUT" >&2
@@ -322,7 +327,7 @@ if [ "$CHART" = 1 ]; then
     fi
   done
   node "$HERE/chart.ts" "$OUT" --size || echo "bench: size chart failed" >&2
-  if [ "$full" = 1 ]; then
+  if [ "$all" = 1 ]; then
     node "$HERE/chart.ts" "$OUT" --size -o "$HERE/charts/" \
       || echo "bench: size chart failed for charts/" >&2
   fi
