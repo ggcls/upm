@@ -47,8 +47,8 @@ node chart.ts                      # re-render the charts for the newest run
 4. Writes `results/<stamp>.jsonl` and, beside it, charts for each phase and measure:
    `<stamp>.<phase>.svg`, `.memory.svg`, `.cpu.svg`, plus `<stamp>.size.svg`. A full suite
    (all runners, default fixtures) also refreshes the committed [`charts/`](charts) that the
-   main README links to. Size depends on neither fixture nor registry, so any run of all
-   runners refreshes `charts/size.svg`.
+   main README links to. Size does not depend on the fixtures, so any run of all runners
+   on the default registry refreshes `charts/size.svg`.
 
 Core dumps are off (`ulimit -c 0`): a crash counts as a failed run, not a heap-sized file in
 the repo. Any `core.<pid>` newer than the run is deleted on exit.

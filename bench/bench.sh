@@ -314,10 +314,10 @@ if [ "$CHART" = 1 ]; then
   # Only a full suite on the default registry replaces the committed charts/ the README links to.
   full=0
   [ "$RUNNERS" = "$ALL_RUNNERS" ] && [ "$FIXTURES" = "$ALL_FIXTURES" ] && [ "$REGISTRY" = npm ] && full=1
-  # A manager's size depends on neither fixture nor registry, so any run of every manager
-  # refreshes the committed size chart.
+  # A manager's size does not depend on the fixtures, so any run of every manager refreshes
+  # the committed size chart.
   all=0
-  [ "$RUNNERS" = "$ALL_RUNNERS" ] && all=1
+  [ "$RUNNERS" = "$ALL_RUNNERS" ] && [ "$REGISTRY" = npm ] && all=1
   for measure in time memory cpu; do
     node "$HERE/chart.ts" "$OUT" --measure "$measure" \
       || echo "bench: $measure chart failed, results are still in $OUT" >&2
