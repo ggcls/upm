@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { barLine, fraction, startBar } from "../src/progress.ts";
+import { barLine, fraction, oscProgress, startBar, takesOsc } from "../src/progress.ts";
 
 describe("progress bar", () => {
   afterEach(() => void vi.useRealTimers());
@@ -57,6 +57,39 @@ describe("progress bar", () => {
     expect(startBar(stream, (t) => t, { CI: "1" })).toBeUndefined();
     expect(startBar(stream, (t) => t, { TERM: "dumb" })).toBeUndefined();
     startBar(stream, (t) => t, { CI: "false" })!.stop();
+  });
+
+  it("reports OSC 9;4 progress only to terminals known to take it", () => {
+    expect(takesOsc({})).toBe(false);
+    expect(takesOsc({ TERM_PROGRAM: "iTerm.app" })).toBe(false);
+    expect(takesOsc({ WT_SESSION: "x" })).toBe(true);
+    expect(takesOsc({ ConEmuANSI: "ON" })).toBe(true);
+    expect(takesOsc({ TERM_PROGRAM: "ghostty" })).toBe(true);
+    expect(takesOsc({ TERM_PROGRAM: "WezTerm" })).toBe(true);
+    expect(takesOsc({ TERM_PROGRAM: "vscode" })).toBe(true);
+    expect(oscProgress(undefined)).toBe("\x1b]9;4;3\x1b\\");
+    expect(oscProgress(0.456)).toBe("\x1b]9;4;1;45\x1b\\");
+    expect(oscProgress(null)).toBe("\x1b]9;4;0\x1b\\");
+
+    vi.useFakeTimers();
+    const write = vi.fn();
+    const stream = { columns: 80, write } as unknown as NodeJS.WriteStream;
+    const listeners = globalThis.process.listenerCount("SIGINT");
+    const bar = startBar(stream, (t) => t, { TERM_PROGRAM: "ghostty" })!;
+    expect(globalThis.process.listenerCount("SIGINT")).toBe(listeners + 1);
+    bar.hear({ phase: "resolve", done: 3 });
+    vi.advanceTimersByTime(100);
+    expect(write).toHaveBeenLastCalledWith("\x1b]9;4;3\x1b\\\rresolving 3 packages\x1b[K");
+    bar.hear({ phase: "link", done: 1, total: 4 });
+    vi.advanceTimersByTime(100);
+    expect(write.mock.lastCall![0].startsWith("\x1b]9;4;1;25\x1b\\\r━")).toBe(true);
+    // Sent again only when the percent changes.
+    bar.hear({ phase: "link", done: 1, total: 4 });
+    vi.advanceTimersByTime(100);
+    expect(write).toHaveBeenCalledTimes(2);
+    bar.stop();
+    expect(write).toHaveBeenLastCalledWith("\x1b]9;4;0\x1b\\");
+    expect(globalThis.process.listenerCount("SIGINT")).toBe(listeners);
   });
 
   it("stopped before its first tick, never writes at all", () => {

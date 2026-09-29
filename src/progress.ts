@@ -25,27 +25,58 @@ export function startBar(
   env: Record<string, string | undefined> = globalThis.process.env,
 ): Bar | undefined {
   if ((env.CI !== undefined && env.CI !== "false") || env.TERM === "dumb") return undefined;
+  const osc = takesOsc(env);
   const seen: Seen = {};
   let shown = "";
+  let reported = "";
   const draw = () => {
     const line = barLine(seen, (stream.columns || 80) - 1, gray);
-    if (line === shown) return;
-    stream.write(`\r${line}\x1b[K`);
+    const report = osc ? oscProgress(fraction(seen)) : "";
+    if (line === shown && report === reported) return;
+    stream.write(`${report === reported ? "" : report}\r${line}\x1b[K`);
     shown = line;
+    reported = report;
   };
   const timer = setInterval(draw, TICK).unref();
   const clear = () => {
     if (shown) stream.write("\r\x1b[K");
     shown = "";
   };
-  return {
-    hear: (progress) => void (seen[progress.phase] = progress),
-    clear,
-    stop: () => {
-      clearInterval(timer);
-      clear();
-    },
+  const stop = () => {
+    clearInterval(timer);
+    clear();
+    if (reported) stream.write(oscProgress(null));
+    reported = "";
+    globalThis.process.off("SIGINT", interrupted);
   };
+  // Ctrl+C would leave the terminal's progress up; take it down, then die of the signal as before.
+  const interrupted = () => {
+    stop();
+    globalThis.process.kill(globalThis.process.pid, "SIGINT");
+  };
+  if (osc) globalThis.process.once("SIGINT", interrupted);
+  return { hear: (progress) => void (seen[progress.phase] = progress), clear, stop };
+}
+
+/**
+ * Terminals known to show OSC 9;4 progress on their tab or taskbar. Others may take any OSC 9
+ * as a desktop notification, so they get none.
+ */
+export function takesOsc(env: Record<string, string | undefined>): boolean {
+  const program = env.TERM_PROGRAM;
+  return (
+    env.WT_SESSION !== undefined ||
+    env.ConEmuANSI === "ON" ||
+    program === "ghostty" ||
+    program === "WezTerm" ||
+    program === "vscode"
+  );
+}
+
+/** OSC 9;4 for `done` from 0 to 1, busy with no known end while undefined, or off for null. */
+export function oscProgress(done: number | undefined | null): string {
+  const state = done === null ? "0" : done === undefined ? "3" : `1;${Math.floor(done * 100)}`;
+  return `\x1b]9;4;${state}\x1b\\`;
 }
 
 /**
