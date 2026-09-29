@@ -1,6 +1,19 @@
 # Changelog
 
 
+## v1.3.1
+
+[compare changes](https://github.com/unjs/upm/compare/v1.3.0...v1.3.1)
+
+### 🏡 Chore
+
+- Build after version bump in release script ([2c52b2b](https://github.com/unjs/upm/commit/2c52b2b))
+- Ignore devEngine mismatch ([bce27ed](https://github.com/unjs/upm/commit/bce27ed))
+
+### ❤️ Contributors
+
+- Pooya Parsa ([@pi0](https://github.com/pi0))
+
 ## v1.3.0
 
 [compare changes](https://github.com/unjs/upm/compare/v1.2.0...v1.3.0)
