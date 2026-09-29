@@ -1039,7 +1039,9 @@ describe("startup budget", () => {
     // 141,619 with the registry's version index and the lockfile kept in node_modules,
     // `--help` unchanged cached and uncached (40/41 and 106/106 ms); 142,114 with consumers
     // sharing a missing peer, `--help` within noise (46/42 and 121/114 ms); 143,973 with kept
-    // documents read in parts and the resolve's threads started early (42/43 and 110/111 ms).
+    // documents read in parts and the resolve's threads started early (42/43 and 110/111 ms);
+    // 144,476 with a warm link that skips the fill and links tops side by side (43/44 and
+    // 115/112 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program

@@ -174,7 +174,10 @@ export interface Experimental {
 }
 
 export interface LinkPoolConfig {
-  /** Workers, 0 to 64; 0 never starts them. Default: up to 4, leaving the main thread a core. */
+  /**
+   * Workers, 0 to 64; 0 never starts them. Default: four, or one per 4,000 files when the pool
+   * knows them, up to 8 and leaving the main thread a core.
+   */
   size: number;
   /** Start them from this many packages in the lockfile. Default 200. */
   packages: number;
@@ -361,12 +364,17 @@ export interface RunResult {
 }
 
 /**
- * Workers by default: up to four, leaving the main thread a core, and none unless that is at
+ * Workers by default: up to eight, leaving the main thread a core, and none unless that is at
  * least two. One worker measured 15–19% slower than linking here (`nuxt`, `next` on two
  * cores) and two a wash; three won. `--experimental-link-pool=1` can still ask for one.
+ *
+ * Without a size asked for, a pool starts four, or one per 4,000 files when it knows more, up
+ * to this. On a warm link over sixteen cores, eight beat four by 12% on 40,000 files and 15% on
+ * 117,000, twelve did no better, and on `nuxt`'s 13,575 files eight were a wash for 40% more
+ * CPU and 58 MB.
  */
 export function defaultPoolSize(cores: number): number {
-  const spare = Math.min(4, cores - 1);
+  const spare = Math.min(8, cores - 1);
   return spare >= 2 ? spare : 0;
 }
 
@@ -374,9 +382,8 @@ let poolDefaults: LinkPoolConfig | undefined;
 
 /**
  * Where the pool was measured to pay for its own startup: `angular/cli` (238 packages, 7,000
- * files) gains 15%, `webpack` (64, 3,358) loses 10%. Four threads did as well as eight on
- * every shape and boot faster; the main thread keeps a core. Read on first use, so importing
- * the package does not count cores.
+ * files) gains 15%, `webpack` (64, 3,358) loses 10%. Read on first use, so importing the
+ * package does not count cores.
  */
 export function linkPoolDefaults(): LinkPoolConfig {
   return (poolDefaults ??= { size: defaultPoolSize(cpus()), packages: 200, files: 6000 });
@@ -389,6 +396,8 @@ interface Context {
   dedupe: boolean;
   resolvePool?: number;
   linkPool: LinkPoolConfig;
+  /** The pool's size was asked for: it starts that many, whatever the files. */
+  sized: boolean;
   /** The project root `projectDir` found: `dir`, else the walk up from cwd. */
   root?: string;
   /** What `findRoot` read of the root, so `loadProject` does not glob and parse it again. */
@@ -443,7 +452,7 @@ function context(options: Context["options"], dedupe = false): Context {
     if (!alone) log("worker threads unavailable; running on one thread", "warn");
     alone = true;
   };
-  return { options, log, dedupe, resolvePool, linkPool: pool, noThreads };
+  return { options, log, dedupe, resolvePool, linkPool: pool, sized: !!linkPool?.size, noThreads };
 }
 
 function count(value: unknown, max = Number.MAX_SAFE_INTEGER): boolean {
@@ -616,13 +625,18 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   // The link runs under the fill: each entry is built as its tarball lands, so the last
   // tarballs' tail hides the link instead of preceding it. A failed download is what the
   // caller hears, not the missing entry the link sees: the catch waits for the fill first.
-  const filling = settled
-    ? undefined
-    : fill(store).finally(() => {
-        trace("fill");
-        if (tracing) trace("filled", take()); // the main thread's memory at that point
-      });
+  // A store that holds every index already has nothing to fill: the linker then reads no index
+  // for a count as each "lands", and builds from the start. 64 ms of `large`'s link.
+  const filling =
+    settled || (!options.verify && wanted.every((pkg) => store.indexSize(pkg.integrity) > 0))
+      ? undefined
+      : fill(store).finally(() => {
+          trace("fill");
+          if (tracing) trace("filled", take()); // the main thread's memory at that point
+        });
   filling?.catch(() => {});
+  // Closed by the fill otherwise: the walk's prefetch may have started unpack threads.
+  if (!filling) store.close();
   // The inputs, for the state file, read back off disk: `plan` may just have written them.
   const inputs = project.workspaces.length === 0 ? await lockText(ctx, dir) : undefined;
   // The linker is handed the hash rather than computing it again: 3.7 ms on `nuxt`.
@@ -897,18 +911,29 @@ function linkPool(ctx: Context, fresh: boolean): PoolPlan | undefined {
   const config = ctx.linkPool;
   if (config.size === 0) return undefined;
   let loading: Promise<typeof import("./link-pool.ts")> | undefined;
+  let loaded: typeof import("./link-pool.ts") | undefined;
   let pool: Promise<LinkPool | undefined> | undefined;
   let picks = 0;
-  const load = () => (loading ??= import("./link-pool.ts"));
+  // The files known when it starts, which its size follows: see `defaultPoolSize`.
+  let files = 0;
+  const load = () => (loading ??= import("./link-pool.ts").then((m) => (loaded = m)));
+  const begin = (m: typeof import("./link-pool.ts")) =>
+    m.startLinkPool(
+      ctx.sized ? config.size : Math.min(config.size, Math.max(4, Math.ceil(files / 4000))),
+      undefined,
+      undefined,
+      ctx.noThreads,
+    );
+  // Started now when the module is in, not at this thread's next await, which comes only once
+  // the lockfile is converted and hashed: 14 ms on `next`, 33 on `large`.
   // A runtime that cannot load the pool builds every entry here, as without one.
   const start = () =>
-    (pool ??= load().then(
-      (m) => m.startLinkPool(config.size, undefined, undefined, ctx.noThreads),
-      () => {
-        ctx.noThreads();
-        return undefined;
-      },
-    ));
+    (pool ??= loaded
+      ? Promise.resolve(begin(loaded))
+      : load().then(begin, () => {
+          ctx.noThreads();
+          return undefined;
+        }));
   const early = fresh && !ctx.options.production;
   if (early) load().catch(() => {});
   return {
@@ -917,10 +942,11 @@ function linkPool(ctx: Context, fresh: boolean): PoolPlan | undefined {
     },
     planned(lock, store) {
       if (!early || pool) return;
-      const { packages, files } = neutral(lock, store);
-      if (packages >= config.packages || files >= config.files) void start();
+      const found = neutral(lock, store);
+      if ((files = found.files) >= config.files || found.packages >= config.packages) void start();
     },
-    ask: (files) => (pool || files() >= config.files ? start() : Promise.resolve(undefined)),
+    ask: (count) =>
+      pool || (files = count()) >= config.files ? start() : Promise.resolve(undefined),
   };
 }
 
