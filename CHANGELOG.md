@@ -1,6 +1,46 @@
 # Changelog
 
 
+## v1.3.0
+
+[compare changes](https://github.com/unjs/upm/compare/v1.2.0...v1.3.0)
+
+### 🚀 Enhancements
+
+- Minimal progress bar and shorter install output ([#12](https://github.com/unjs/upm/pull/12))
+- **cli:** Add --verbose flag ([#18](https://github.com/unjs/upm/pull/18))
+- **cli:** Add -v and --version ([#19](https://github.com/unjs/upm/pull/19))
+- **cli:** `upm` alone installs ([242fa15](https://github.com/unjs/upm/commit/242fa15))
+- **cli:** Report progress with OSC 9;4. ([81e79ce](https://github.com/unjs/upm/commit/81e79ce))
+
+### 🔥 Performance
+
+- Faster warm resolve and reuse of an existing node_modules ([#9](https://github.com/unjs/upm/pull/9))
+- Faster warm resolve on large workspaces ([#15](https://github.com/unjs/upm/pull/15))
+- Faster link from upm.lock with a warm store ([#14](https://github.com/unjs/upm/pull/14))
+- No-op install in a large workspace without a glob ([#13](https://github.com/unjs/upm/pull/13))
+- Faster cold install ([#16](https://github.com/unjs/upm/pull/16))
+
+### 🩹 Fixes
+
+- Share one peer version between consumers whose ranges overlap ([#10](https://github.com/unjs/upm/pull/10))
+- Link undeclared deps through `.upm/node_modules` ([#20](https://github.com/unjs/upm/pull/20))
+
+### 🏡 Chore
+
+- Update readme ([1108606](https://github.com/unjs/upm/commit/1108606))
+- Update website ([16ad722](https://github.com/unjs/upm/commit/16ad722))
+- Fix bench script ([234e246](https://github.com/unjs/upm/commit/234e246))
+- Update benchmarks ([89f6461](https://github.com/unjs/upm/commit/89f6461))
+- Update size chart ([79b4407](https://github.com/unjs/upm/commit/79b4407))
+- Update bench script ([7c62d9e](https://github.com/unjs/upm/commit/7c62d9e))
+
+### ❤️ Contributors
+
+- Pooya Parsa ([@pi0](https://github.com/pi0))
+- Pi0x <x@pi0.io>
+- Grégoire Ciles ([@ggcls](https://github.com/ggcls))
+
 ## v1.2.0
 
 [compare changes](https://github.com/unjs/upm/compare/v1.1.0...v1.2.0)
