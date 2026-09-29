@@ -50,7 +50,7 @@
     "packageManager": {
       "name": "upm",
       "version": "^1",
-      "onFail": "warn"
+      "onFail": "ignore"
     }
   }
 }
