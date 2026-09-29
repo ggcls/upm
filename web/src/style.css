@@ -69,19 +69,15 @@ html[data-theme="dark"] {
   background: light-dark(#d4d4d8, #3f3f46) padding-box;
 }
 
-/* rangi's block scrolls itself; let the pane scroll instead and keep the gutter in view. */
-.code > div {
-  overflow: visible !important;
-  min-width: fit-content;
+.code .rows {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
 }
-.code .shj-numbers {
-  position: sticky;
-  left: 0;
-  padding-left: 1rem !important;
-  padding-right: 1rem !important;
-  /* rangi dims the gutter with opacity, which would show the code scrolling under it. */
-  opacity: 1 !important;
-  color: light-dark(#a1a1aa, #52525b) !important;
+.code .n {
+  padding-inline: 1rem;
+  text-align: right;
+  user-select: none;
+  color: light-dark(#a1a1aa, #52525b);
   background: var(--chrome-bg);
 }
 
