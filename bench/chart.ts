@@ -93,6 +93,7 @@ const RUNTIME: Record<string, Runtime> = {
   yarn4: "node",
   aube: "rust",
   nub: "rust",
+  vlt: "node",
   bun: "bun",
   deno: "deno",
 };
@@ -285,7 +286,7 @@ function marker(
 ) {
   const attrs = { fill, stroke, stroke_width: 1.2 };
   const body = title ? `<title>${esc(title)}</title>` : undefined;
-  switch (fixture % 3) {
+  switch (fixture % 5) {
     case 0:
       s.add("circle", { ...attrs, cx: x, cy: y, r: DOT }, body);
       break;
@@ -299,8 +300,14 @@ function marker(
     case 2:
       s.add("path", { ...attrs, d: `M${x} ${y - 4.5}l4.5 4.5-4.5 4.5-4.5-4.5z` }, body);
       break;
+    case 3:
+      s.add("path", { ...attrs, d: `M${x} ${y - 4.5}l4.2 7.5h-8.4z` }, body);
+      break;
+    case 4:
+      s.add("path", { ...attrs, d: `M${x - 2} ${y - 3.5}h4l2 3.5-2 3.5h-4l-2-3.5z` }, body);
+      break;
   }
-  if (fixture >= 3) s.text(x, y - 7, String(fixture + 1), 9, INK, "middle", 700);
+  if (fixture >= 5) s.text(x, y - 7, String(fixture + 1), 9, INK, "middle", 700);
 }
 
 // The runtime's logo fitted into an ICON px square centered on (x, y).
