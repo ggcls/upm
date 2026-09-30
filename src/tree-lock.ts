@@ -39,13 +39,23 @@ export async function holdTree(
   });
   let delay = 25;
   let told = false;
+  let busySince = 0;
   for (;;) {
     try {
       await writeFile(path, mine, { flag: "wx" });
       break;
     } catch (error) {
-      if ((error as { code?: string }).code !== "EEXIST") throw cannot(path, error);
+      const { code } = error as { code?: string };
+      if (busy(code)) {
+        // Windows refuses the name while the last holder's file is still being deleted.
+        busySince ||= Date.now();
+        if (Date.now() - busySince > STALE) throw cannot(path, error);
+        await sleep(25);
+        continue;
+      }
+      if (code !== "EEXIST") throw cannot(path, error);
     }
+    busySince = 0;
     if (await takeOver(path)) continue;
     if (!told) waiting();
     told = true;
@@ -155,8 +165,18 @@ async function takeOver(path: string): Promise<boolean> {
 function gone(path: string, error: unknown): boolean {
   const { code } = error as { code?: string };
   if (code === "ENOENT") return true;
-  if (code === "EBUSY" || code === "EPERM") return false;
+  if (code === "EPERM" || busy(code)) return false;
   throw cannot(path, error);
+}
+
+const WIN = globalThis.process?.platform === "win32";
+
+/**
+ * A moment's refusal, not a tree that cannot be written. Windows says EPERM or EACCES for a
+ * file another process is deleting or has open; elsewhere those mean no permission.
+ */
+function busy(code: string | undefined): boolean {
+  return code === "EBUSY" || (WIN && (code === "EPERM" || code === "EACCES"));
 }
 
 /** As the state file's own failures: the tree cannot be written. */

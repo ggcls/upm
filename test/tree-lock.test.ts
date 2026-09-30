@@ -55,6 +55,20 @@ describe("holdTree", () => {
     expect(await readdir(nm)).toEqual([]);
   });
 
+  it("waits out a moment's refusal of the name, as Windows gives while it deletes the file", async () => {
+    const fsp = process.getBuiltinModule("node:fs/promises");
+    // Windows says EPERM for a file it is still deleting; EBUSY means the same everywhere.
+    const code = process.platform === "win32" ? "EPERM" : "EBUSY";
+    const refuse = () => Promise.reject(Object.assign(new Error(code), { code }));
+    vi.spyOn(fsp, "writeFile").mockImplementationOnce(refuse).mockImplementationOnce(refuse);
+    let told = 0;
+    await (
+      await holdTree(nm, () => told++)
+    )();
+    expect(told).toBe(0);
+    expect(await readdir(nm)).toEqual([]);
+  });
+
   it("takes over from a holder that died, and one gone quiet in another pid namespace", async () => {
     await aged(DEAD, 11);
     let told = 0;
