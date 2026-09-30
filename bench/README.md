@@ -351,13 +351,16 @@ bench/profile.sh                  # 20 runs, `upm i` repeat on tiny
 bench/profile.sh -n 50 -f nitro --warm
 ```
 
-Builds `dist/` once, then times an empty Node script, `upm --version` and `upm i` in rounds,
-printing min/median/max wall time, peak RSS and CPU for each, and the median difference from
-bare Node. A second table shows what getting a manager costs before it runs: `curl` downloads
-the published upm and pnpm 12 tarballs from registry.npmjs.org and `tar` unpacks each into an
-empty directory, timed separately.
+Builds `dist/` once, then times, in rounds, an empty Node script, `--version` of this tree's
+upm, of the published upm and of pnpm 12's native binary (`@pnpm/exe.<platform>`), and
+`upm i`. It prints the median wall time, peak RSS and CPU of each, and for upm the difference
+from bare Node. A second table shows what getting each manager costs before it runs: `curl`
+downloads the published upm tarball and pnpm's binary package from registry.npmjs.org and
+`tar` unpacks each into an empty directory, timed separately.
 
 It needs only bash, Node, curl and tar, so it runs on CI images without Perl: the harness
-times spawn to reap, and a `--require` hook writes each child's `process.resourceUsage()` at
-exit. The hook costs about 1 ms per start, the same for every command. `--warm` and `--cold`
-reset the project before each install as in `ab.sh`; see the script's header for options.
+times spawn to reap, and a `--require` hook writes each Node child's `process.resourceUsage()`
+at exit. The hook costs about 1 ms per start, the same for every Node command. pnpm's binary
+is not Node, so its peak RSS (`~`) is sampled from `/proc` in separate runs, and it has no CPU
+reading. `--warm` and `--cold` reset the project before each install as in `ab.sh`; see the
+script's header for options.
