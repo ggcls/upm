@@ -233,7 +233,10 @@ describe("api", () => {
       '{\n\t"name": "demo",\n\t"private": true,\n\t"dependencies": {\n\t\t"nanoid": "^5.0.0"\n\t}\n}',
     );
     expect((await lstat(join(dir, "package.json"))).isSymbolicLink()).toBe(true);
-    expect((await stat(join(dir, "real", "package.json"))).mode & 0o777).toBe(0o640);
+    // Windows keeps no POSIX mode bits to compare.
+    if (process.platform !== "win32") {
+      expect((await stat(join(dir, "real", "package.json"))).mode & 0o777).toBe(0o640);
+    }
     expect(await readdir(join(dir, "real"))).toEqual(["package.json"]);
   });
 
@@ -530,6 +533,8 @@ describe("api", () => {
     await writeFile(other, bad);
     const { atime, mtime } = await stat(file);
     await utimes(other, atime, mtime);
+    // Windows refuses to rename over the read-only link the repair placed.
+    await chmod(file, 0o644);
     await rename(other, file);
     expect((await upm.install(base)).upToDate).toBe(true);
     expect(await upm.install({ ...base, verify: true })).toMatchObject({ upToDate: false });
