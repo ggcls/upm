@@ -305,7 +305,11 @@ export function parseLockfile(text: string): Lockfile {
   return validate(parsed);
 }
 
-export async function readLockfile(dir: string): Promise<Lockfile | undefined> {
+/** `read` is told the bytes, before they are parsed. */
+export async function readLockfile(
+  dir: string,
+  read?: (text: string) => void,
+): Promise<Lockfile | undefined> {
   const file = builtin.path.join(dir, LOCKFILE);
   let text: string;
   try {
@@ -314,6 +318,7 @@ export async function readLockfile(dir: string): Promise<Lockfile | undefined> {
     if ((error as { code?: string }).code === "ENOENT") return undefined;
     throw fail(`cannot read ${file}: ${(error as Error).message}`);
   }
+  read?.(text);
   return parseLockfile(text);
 }
 

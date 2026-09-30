@@ -115,6 +115,13 @@ before the fill, so the link can run under it, and puts back what was there when
 fails: its integrities came from metadata, and no tarball proved them. A lockfile another
 install wrote since stays. `lock` writes from metadata alone.
 
+Another command may write `upm.lock` or package.json while an install runs, so the state
+names the lockfile bytes the install planned from, never the file's by the end, and keeps
+the two files' stamps only when each, stamped before it is read again, still holds what the
+install used. `add` and `remove` write package.json only if it is still the text they read,
+checked and renamed under `.upm.editing` beside it; otherwise the edit is made again from the
+file as it is now, so two at once keep both edits. An editor's write takes no hold.
+
 Shared hardlinks make writes affect other projects. Treat installed content as
 immutable. Integrity must pass before untrusted archive content is written to the
 shared store, and an index must not expose an unfinished package. Content becomes

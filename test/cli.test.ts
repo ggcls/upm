@@ -1213,11 +1213,13 @@ describe("startup budget", () => {
     // its registries told; 154,685 with a registry that gives no publish dates told. 155,055 with a
     // dropped optional asked for once more, `--help` and a no-op install within noise; 155,463 with
     // unframed tarball bytes asked for once more, the same. 155,771 with a tree held while it is
-    // relinked, the lock itself lazy, `--help` and a no-op install within noise.
+    // relinked, the lock itself lazy, `--help` and a no-op install within noise. 156,685 with the
+    // state naming only the files an install planned from, and an edit made again over another's,
+    // checked and written under a hold beside package.json.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(155_780);
+    expect(bytes).toBeLessThanOrEqual(156_690);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

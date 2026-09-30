@@ -16,16 +16,23 @@ const STALE = 10_000;
  */
 const ABANDONED = 60_000;
 
+/** What `add` and `remove` hold beside a package.json from their check of it to their write. */
+export const EDIT_HELD = ".upm.editing";
+
 /**
- * Take `<nm>/.upm.linking`, waiting while another process holds it. `waiting` is told once,
- * when there is a wait. Resolves to the release, which gives the file up only while it is
- * still the one this call made. The file holds the pid and a token: a freed inode is reused
- * at once, so only the token tells one holder's file from the next. On Linux it also names
- * where the pid means something, so a waiter there need not wait out STALE for a dead one.
+ * Take `<nm>/.upm.linking` (or `name`), waiting while another process holds it. `waiting` is
+ * told once, when there is a wait. Resolves to the release, which gives the file up only while
+ * it is still the one this call made. The file holds the pid and a token: a freed inode is
+ * reused at once, so only the token tells one holder's file from the next. On Linux it also
+ * names where the pid means something, so a waiter there need not wait out STALE for a dead one.
  */
-export async function holdTree(nm: string, waiting: () => void): Promise<() => Promise<void>> {
+export async function holdTree(
+  nm: string,
+  waiting: () => void,
+  name = TREE_HELD,
+): Promise<() => Promise<void>> {
   const { mkdir, readFile, unlink, utimes, writeFile } = builtin.fsp;
-  const path = builtin.path.join(nm, TREE_HELD);
+  const path = builtin.path.join(nm, name);
   const mine = `${[pid, token(), here()].join(" ").trimEnd()}\n`;
   await mkdir(nm, { recursive: true }).catch((error: unknown) => {
     throw cannot(path, error);

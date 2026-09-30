@@ -439,6 +439,8 @@ interface Context {
   restored?: Lockfile;
   /** What `upm.lock` held before this install resolved and wrote `wrote` over it, if anything. */
   replaced?: { dir: string; text?: string; wrote: string };
+  /** The `upm.lock` bytes the plan read: by the link's end the file may be another install's. */
+  planned?: string;
   /** Keys of packages whose bins another manager's lockfile left out. */
   binless?: string[];
   /** Another manager's lockfile as read, stamped first: a rewrite after is a new install's. */
@@ -577,8 +579,10 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
     const hoist = settings(ctx).hoist;
     if (matched && files && sameFiles(dir, files) && treeStanding(dir, state, hoist)) {
       // Read and hashed, or folders read again, this time: recorded so the next install need not.
+      // The lockfile was read after its stamp; package.json before, so it is read again.
       if (!stamped || project.learned) {
-        await writeState(dir, { ...state, stamps, workspaces: project.proof });
+        const held = stamped || holds(dir, project.manifest) ? stamps : undefined;
+        await writeState(dir, { ...state, stamps: held, workspaces: project.proof });
       }
       trace("linked");
       const { packages, otherPlatforms, warnings } = state.summary!;
@@ -707,8 +711,9 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   filling?.catch(() => {});
   // Closed by the fill otherwise: the walk's prefetch may have started unpack threads.
   if (!filling) store.close();
-  // The inputs, for the state file, read back off disk: `plan` may just have written them.
-  const inputs = await lockText(ctx, dir);
+  // The lockfile the tree is linked from, for the state file: the bytes `plan` read or wrote,
+  // not the file's by now — another install may have written it since.
+  const inputs = ctx.read ? ctx.read.text : (ctx.replaced?.wrote ?? ctx.planned);
   // The linker is handed the hash rather than computing it again: 3.7 ms on `nuxt`.
   const link = {
     dir,
@@ -729,7 +734,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
             packages: wanted.length,
             otherPlatforms: elsewhere,
             warnings: resolution.warnings,
-            stamps: stampsOf(ctx, dir),
+            stamps: await heldStamps(ctx, dir, inputs, project.manifest),
           },
     tarballs: filesOf(ctx, lock),
     workspaces: project.proof,
@@ -816,6 +821,7 @@ async function restoreLock(ctx: Context, project: Project, state?: InstallState)
     }
   }
   await writeLock(dir, text);
+  ctx.planned = text;
   ctx.source = { path: source.path };
   ctx.log(`wrote ${LOCKFILE} ← node_modules`, "info");
 }
@@ -854,6 +860,32 @@ function stampsOf(ctx: Context, dir: string): InstallState["stamps"] {
   const lock = ctx.read ? ctx.read.stamp : stampOf(lockSource(ctx, dir).path);
   const manifest = stampOf(join(dir, "package.json"));
   return lock && manifest ? { lock, manifest, settings: settingsOf(settingsIn(ctx)) } : undefined;
+}
+
+/**
+ * `stampsOf`, but only while both files still hold what this install planned from: each is
+ * stamped before it is read again, so a write since shows here, and a later one as another
+ * stamp. Without it, another install's files, written meanwhile, would pass for this tree's.
+ */
+async function heldStamps(
+  ctx: Context,
+  dir: string,
+  lock: string,
+  manifest: RootManifest,
+): Promise<InstallState["stamps"]> {
+  const stamps = stampsOf(ctx, dir);
+  if (!stamps || (await lockText(ctx, dir)) !== lock || !holds(dir, manifest)) return undefined;
+  return stamps;
+}
+
+/** Whether the root's package.json parses to `manifest` still, as `inputsHash` compares it. */
+function holds(dir: string, manifest: RootManifest): boolean {
+  try {
+    const text = builtin.fs.readFileSync(builtin.path.join(dir, "package.json"), "utf8");
+    return JSON.stringify(JSON.parse(text)) === JSON.stringify(manifest);
+  } catch {
+    return false;
+  }
 }
 
 /** Each of the lockfile's local tarballs with the stamp this command took before it checked it. */
@@ -1097,6 +1129,10 @@ interface Edit {
  * as npm does, and `workspace:` is saved as typed.
  */
 export async function add(specs: string[], options: AddOptions = {}): Promise<AddResult> {
+  return await edited(options, () => adding(specs, options));
+}
+
+async function adding(specs: string[], options: AddOptions): Promise<AddResult> {
   if (specs.length === 0) throw fail("add needs at least one spec", "EOPTION");
   const group = options.group ?? "dependencies";
   if (!GROUPS.includes(group)) throw fail(`${group} is not a dependency group`, "EOPTION");
@@ -1157,6 +1193,10 @@ function linksTo(spec: Spec, version: string): boolean {
 
 /** Take each name out of package.json, then install — the sweep is what unlinks them. */
 export async function remove(names: string[], options: RemoveOptions = {}): Promise<RemoveResult> {
+  return await edited(options, () => removing(names, options));
+}
+
+async function removing(names: string[], options: RemoveOptions): Promise<RemoveResult> {
   if (names.length === 0) throw fail("remove needs at least one name", "EOPTION");
   const ctx = await open(options);
   const edit = await editTarget(ctx, "remove");
@@ -1475,7 +1515,7 @@ async function plan(
   }
   warnUnapplied(ctx, manifest);
   const existing = frozen
-    ? await readLockfile(dir)
+    ? await readLockfile(dir, (text) => (ctx.planned = text))
     : (ctx.restored ?? (await currentLock(ctx, dir)));
   trace("lockread");
   // A local tarball is read like package.json: other bytes in the file make the lockfile stale.
@@ -1784,16 +1824,45 @@ async function saveManifest({ file, raw, manifest }: Edit): Promise<void> {
   if (text === raw) return;
   const { fsp } = builtin;
   let temp: string | undefined;
+  let release: (() => Promise<void>) | undefined;
+  let moved = false;
   try {
     const target = await fsp.realpath(file);
     const mode = (await fsp.stat(target)).mode & 0o7777;
     temp = `${target}.${pid}-${globalThis.crypto.randomUUID()}.tmp`;
     await fsp.writeFile(temp, text, { mode });
     await fsp.chmod(temp, mode); // past the umask
-    await replaceFile(temp, target);
+    // Another command's edit since this one read the file would be lost under this one's. Held
+    // from the check to the rename, so two edits at once cannot both find the file unchanged.
+    const { EDIT_HELD, holdTree } = await import("./tree-lock.ts");
+    release = await holdTree(builtin.path.dirname(target), () => {}, EDIT_HELD);
+    moved = (await fsp.readFile(target, "utf8")) !== raw;
+    if (!moved) await replaceFile(temp, target);
   } catch (error) {
     if (temp) await fsp.rm(temp, { force: true });
     throw fail(`cannot write ${file}: ${(error as Error).message}`, "EMANIFEST");
+  } finally {
+    await release?.();
+  }
+  if (moved) {
+    await fsp.rm(temp!, { force: true });
+    throw Object.assign(fail(`${file} changed meanwhile`, "EMANIFEST"), { moved: true });
+  }
+}
+
+/**
+ * An edit of package.json made again from the file as it is now, when another command wrote
+ * it after this one read it: two `add`s at once each keep the other's dependency. An editor's
+ * write, which takes no hold, can still land between the check and the rename.
+ */
+async function edited<T>(options: InstallOptions, edit: () => Promise<T>): Promise<T> {
+  for (let tries = 1; ; tries++) {
+    try {
+      return await edit();
+    } catch (error) {
+      if (!(error as { moved?: boolean }).moved || tries === 3) throw error;
+      options.log?.("package.json changed meanwhile: editing it again", "info");
+    }
   }
 }
 
@@ -1838,7 +1907,7 @@ function hostsOf(ctx: Context): BaseFor {
 /** A broken lockfile does not stop `lock`; writing a good one is the whole job. */
 async function currentLock(ctx: Context, dir: string): Promise<Lockfile | undefined> {
   try {
-    return await readLockfile(dir);
+    return await readLockfile(dir, (text) => (ctx.planned = text));
   } catch (error) {
     ctx.log(`ignoring ${LOCKFILE}: ${describe(error)}`, "warn");
     return undefined;

@@ -714,6 +714,96 @@ describe("api", () => {
     expect(await readdir(join(dir, "node_modules"))).not.toContain(TREE_HELD);
   });
 
+  it.each([
+    ["the lockfile and package.json", true, true],
+    ["package.json", false, true],
+    ["the lockfile", true, false],
+  ])("takes no stamp of %s another command wrote while it installed", async (_, lockToo, back) => {
+    serve("other", { "1.0.0": makeTarball([{ path: "index.js", data: "other\n" }]) });
+    const lockFile = join(dir, "upm.lock");
+    const manifestFile = join(dir, "package.json");
+    await writeFile(manifestFile, '{"dependencies":{"nanoid":"^5"}}');
+    await upm.install(base);
+    const lock = await readFile(lockFile, "utf8");
+    // Another command puts the files back as they were once this install has read them.
+    const log = (message: string) => {
+      if (!message.startsWith("wrote upm.lock")) return;
+      if (lockToo) writeFileSync(lockFile, lock);
+      if (back) writeFileSync(manifestFile, '{"dependencies":{"nanoid":"^5"}}');
+    };
+    await writeFile(manifestFile, '{"dependencies":{"nanoid":"^5","other":"^1"}}');
+    await upm.install({ ...base, log });
+    expect(await readdir(join(dir, "node_modules"))).toContain("other");
+    // The tree's copy is the lockfile it was linked from, not the one there now.
+    expect(await readFile(join(dir, "node_modules", ".upm.lock"), "utf8")).toContain("other@");
+    // The tree is of what this install read; the files now are the other command's, so the
+    // next install reads them. A lockfile put back alone is resolved again onto the same tree.
+    expect(await upm.install(base)).toMatchObject({ upToDate: !back });
+    expect((await readdir(join(dir, "node_modules"))).includes("other")).toBe(!back);
+    expect((await readFile(lockFile, "utf8")).includes("other@")).toBe(!back);
+    expect(await upm.install(base)).toMatchObject({ upToDate: true });
+  });
+
+  it("takes no stamp of a package.json written as a no-op install read it", async () => {
+    serve("other", { "1.0.0": makeTarball([{ path: "index.js", data: "other\n" }]) });
+    const manifestFile = join(dir, "package.json");
+    await writeFile(manifestFile, '{"dependencies":{"nanoid":"^5"}}');
+    await upm.install(base);
+    // The lockfile comes back from the tree after package.json is read, before it is stamped.
+    await rm(join(dir, "upm.lock"));
+    const log = (message: string) => {
+      if (message.startsWith("wrote upm.lock")) {
+        writeFileSync(manifestFile, '{"dependencies":{"nanoid":"^5","other":"^1"}}');
+      }
+    };
+    expect(await upm.install({ ...base, log })).toMatchObject({ upToDate: true });
+    expect(await upm.install(base)).toMatchObject({ upToDate: false });
+    expect(await readdir(join(dir, "node_modules"))).toContain("other");
+  });
+
+  it("adds again onto a package.json another command wrote while it resolved", async () => {
+    serve("other", { "1.0.0": makeTarball([{ path: "index.js", data: "other\n" }]) });
+    serve("third", { "1.0.0": makeTarball([{ path: "index.js", data: "third\n" }]) });
+    const manifestFile = join(dir, "package.json");
+    await writeFile(manifestFile, '{"dependencies":{"nanoid":"^5"}}');
+    await upm.install(base);
+    // As another `add` that finished first leaves it.
+    let edit: (() => string) | undefined = () => (
+      (edit = undefined),
+      '{"dependencies":{"nanoid":"^5","third":"^1"}}'
+    );
+    const log = (message: string) => {
+      lines.push(message);
+      if (message.startsWith("wrote upm.lock") && edit) writeFileSync(manifestFile, edit());
+    };
+    await upm.add(["other"], { ...base, log });
+    expect(lines).toContain("package.json changed meanwhile: editing it again");
+    expect(Object.keys((await readJson(manifestFile)).dependencies)).toEqual([
+      "nanoid",
+      "other",
+      "third",
+    ]);
+    expect(await readdir(join(dir, "node_modules"))).toEqual(
+      expect.arrayContaining(["nanoid", "other", "third"]),
+    );
+    expect(await readdir(dir)).not.toContain(".upm.editing");
+    expect(await upm.install(base)).toMatchObject({ upToDate: true });
+
+    // One that never stops changing is given up on, with the lockfile as it was.
+    const lock = await readFile(join(dir, "upm.lock"), "utf8");
+    let n = 0;
+    const deps = { nanoid: "^5", other: "^1", third: "^1" };
+    edit = () => JSON.stringify({ version: `1.0.${n++}`, dependencies: deps });
+    await expect(upm.remove(["other"], { ...base, log })).rejects.toMatchObject({
+      code: "EMANIFEST",
+    });
+    expect(await readFile(join(dir, "upm.lock"), "utf8")).toBe(lock);
+    const left = (await readdir(dir)).filter((name) =>
+      /^(package\.json\.|\.upm\.editing)/.test(name),
+    );
+    expect(left).toEqual([]);
+  });
+
   it("fails a frozen install without a lockfile", async () => {
     await writeFile(join(dir, "package.json"), "{}");
     await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({ code: "ELOCK" });
