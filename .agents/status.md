@@ -38,6 +38,11 @@ compatibility. Keep this page about open work, not completed implementation step
   by those tests.
   Read-only is a file attribute there, shared by every hardlink: repairing a damaged blob
   leaves the old copy writable in projects still linked to it.
+  Two files a case-insensitive disk folds to one name (`A.js`, `a.js`) link the later, as npm's
+  tar does, but when their sizes differ the entry fails the size check of every full link and is
+  built again.
+  Reserved Windows names (`con`, `aux.js`) and names ending in a dot or space are not handled.
+  Start at `place` in `src/link.ts`.
   A portable lockfile is not proof of a portable installer. Add real install/run checks,
   plus glibc/musl and CPU-limited cases, before making broader support claims. Nobody has
   run these by hand off Linux: the bin's flush-then-exit (`exit` in `src/cli.ts`; stdout to a

@@ -194,7 +194,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   const normalized = new Map<string, string>();
   const heads = new Map<string, Promise<string | undefined>>();
   const { lstat, mkdir, readdir, realpath, rename, rm, rmdir, stat, utimes } = builtin.fsp;
-  const { copyFileSync, linkSync } = builtin.fs;
+  const { copyFileSync, linkSync, unlinkSync } = builtin.fs;
   const up = `..${sep}`;
   const limit = createLimiter(options.concurrency ?? 16);
   const storeDir = join(options.dir, "node_modules", ".upm");
@@ -779,7 +779,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
    * kernel serializes anyway, so the threadpool hop buys no overlap and costs a futex round
    * trip per file: measured at 124ms against 95ms for the same 13,575 links.
    */
-  function place(from: string, to: string): void {
+  function place(from: string, to: string, again = false): void {
     if (!copyOnly) {
       try {
         linkSync(from, to);
@@ -788,6 +788,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       } catch (error) {
         const code = (error as { code?: string }).code ?? "";
         if (NO_LINKS.has(code)) copyOnly = true;
+        else if (code === "EEXIST" && !again && unlinked(to)) return place(from, to, true);
         // EMLINK is this one file exhausting the inode's link count; the rest still link.
         else if (code !== "EMLINK") throw fail(`cannot link ${to}: ${reason(error)}`, "ELINK");
       }
@@ -799,6 +800,19 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       result.copied++;
     } catch (error) {
       throw fail(`cannot copy ${to}: ${reason(error)}`, "ELINK");
+    }
+  }
+
+  /**
+   * Nothing is under a fresh temp dir but a name a case-insensitive disk folds onto one placed
+   * already, `A.js` after `a.js`: the later wins, as a copy's overwrite and npm's tar do.
+   */
+  function unlinked(path: string): boolean {
+    try {
+      unlinkSync(path);
+      return true;
+    } catch {
+      return false;
     }
   }
 

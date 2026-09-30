@@ -46,6 +46,15 @@ export function runShard(shard: Shard, linker: Linker): ShardResult {
   }
   let linked = 0;
   let copied = 0;
+  let again = -1; // the one file given a second link, so a name that stays taken fails
+  const unlinked = (path: string) => {
+    try {
+      unlinkSync(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   for (let i = 0; i < paths.length; i++) {
     const from = `${shard.blobDir}${sep}${blobs[i]}`;
     const to = `${shard.dir}${sep}${paths[i]}`;
@@ -57,6 +66,11 @@ export function runShard(shard: Shard, linker: Linker): ShardResult {
       } catch (error) {
         const code = (error as { code?: string }).code ?? "";
         if (NO_LINKS.has(code)) linker.copyOnly = true;
+        // A case-insensitive disk folds `A.js` onto `a.js`: the later wins, as in `place`.
+        else if (code === "EEXIST" && again !== i && unlinked(to)) {
+          again = i--;
+          continue;
+        }
         // EMLINK is this one file exhausting the inode's link count; the rest still link.
         else if (code !== "EMLINK") throw fail(`cannot link ${to}: ${reason(error)}`);
       }

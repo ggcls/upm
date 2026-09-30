@@ -1208,11 +1208,12 @@ describe("startup budget", () => {
     // noise (50/49 and 134/134 ms). 152,815 with a short blob found under a damaged entry.
     // 152,993 with `--verify` reading content through a lazy `verify.ts`. 153,191 with the no-op
     // check following each direct link to its package dir.
-    // 153,423 with the engines warning; 153,855 naming the package.json fields not applied.
+    // 153,423 with the engines warning; 153,855 naming the package.json fields not applied;
+    // 153,974 with case-folded file names linked last-wins.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(153_900);
+    expect(bytes).toBeLessThanOrEqual(154_000);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

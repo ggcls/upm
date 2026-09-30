@@ -171,6 +171,37 @@ describe("linkTree", () => {
     expect(() => fromRoot.resolve("b")).toThrow();
   });
 
+  // A case-insensitive disk (macOS, Windows) has `A.js` and `a.js` at one name. Linux has not,
+  // so one path listed twice stands in: the second link finds the name taken, as there.
+  it("lets the later of two files a disk folds to one name win", async () => {
+    const { store, resolution, integrity } = await seed([
+      { name: "a", files: { "A.js": "first", "b.js": "second" } },
+    ]);
+    const real = store.index.bind(store);
+    store.index = (key: string) => {
+      const found = real(key);
+      if (!found || key !== integrity["a@1.0.0"]) return found;
+      const later = found.files.find((file) => file.path === "b.js")!;
+      return { ...found, files: [...found.files, { ...later, path: "A.js" }] };
+    };
+    await linkTree(resolution, { dir: project, store });
+    expect(await read(join(project, "node_modules", "a", "A.js"))).toBe("second");
+  });
+
+  it("lets the later of two such files win on a link thread", async () => {
+    const { runShard } = await import("../src/link-worker.ts");
+    const blobDir = join(root, "blobs");
+    const dir = join(root, "entry");
+    await mkdir(blobDir, { recursive: true });
+    await mkdir(dir);
+    await writeFile(join(blobDir, "one"), "first");
+    await writeFile(join(blobDir, "two"), "second");
+    const shard = { dirs: [], dir, paths: ["A.js", "A.js"], blobDir, blobs: ["one", "two"] };
+    const result = runShard({ ...shard, symlinks: [] }, { copyOnly: false });
+    expect(result).toEqual({ linked: 2, copied: 0 });
+    expect(await read(join(dir, "A.js"))).toBe("second");
+  });
+
   it("hardlinks from the store instead of copying", async () => {
     const { store, resolution, integrity } = await seed([
       { name: "a", files: { "index.js": "shared bytes" } },
