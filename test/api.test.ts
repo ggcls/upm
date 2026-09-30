@@ -13,6 +13,7 @@ import {
   rm,
   stat,
   symlink,
+  truncate,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -522,6 +523,30 @@ describe("api", () => {
     await rm(lockFile);
     await expect(upm.install({ ...base, log })).rejects.toMatchObject({ code: "EINTEGRITY" });
     expect(await readFile(lockFile, "utf8")).toBe(theirs);
+  });
+
+  it("fetches a package again when its blobs lost their bytes under a standing index", async () => {
+    await writeFile(join(dir, "package.json"), '{"dependencies":{"nanoid":"^5"}}');
+    await upm.install(base);
+    const file = join(dir, "node_modules", "nanoid", "index.js");
+    const text = await readFile(file, "utf8");
+    // As power lost before the page cache reached the disk leaves it: the index written, the
+    // blob empty, and the entry hardlinked to that same empty blob.
+    await chmod(file, 0o644);
+    await truncate(file, 0);
+    await rm(join(dir, "node_modules", ".upm.json"));
+    const requests: string[] = [];
+    server.on("request", (request) => void requests.push(request.url ?? ""));
+    const fetches = () => requests.filter((url) => url.endsWith(".tgz")).length;
+
+    expect(await upm.install(base)).toMatchObject({ upToDate: false });
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(fetches()).toBe(1);
+    // Healed in the store too, so the next full link needs nothing from the network.
+    await rm(join(dir, "node_modules"), { recursive: true });
+    await upm.install(base);
+    expect(await readFile(file, "utf8")).toBe(text);
+    expect(fetches()).toBe(1);
   });
 
   it("fails a frozen install without a lockfile", async () => {

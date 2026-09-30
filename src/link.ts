@@ -452,7 +452,13 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
     const final = join(storeDir, entry.key);
     if (present.has(entry.key)) {
       const deps = depsOf(entry.pkg);
-      if (await intact(entry, deps)) {
+      const files = await sized(entry, (file) => join(storeDir, entry.home, file.path));
+      // Short here and hardlinked, it is short in the store too: power lost before the disk had
+      // the bytes. ELINK has the install refill the store with sizes checked, then link again.
+      if (!files && !(await sized(entry, store.blobPath))) {
+        throw fail(`${entry.pkg.name}@${entry.pkg.version} is damaged in ${store.dir}`, "ELINK");
+      }
+      if (files && (await intact(entry, deps))) {
         result.reused++;
         // Touch it, exactly as the store touches a blob it adopts: a prune whose `keep` came
         // from the state file we just cleared must read "someone still wants this" off the
@@ -486,18 +492,12 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
 
   /**
    * npm's `getAction` for our layout: the directory name proves what an entry *should* hold, not
-   * what it does. Every file at the size the index recorded, every dep symlink and every bin
-   * pointing where we would point it — anything else and the entry is rebuilt. Sizes come from
-   * the index, so nothing is read or rehashed. IDEA.md 4, tier 2.
+   * what it does. Every file at the size the index recorded (asked first), every dep symlink and
+   * every bin pointing where we would point it — anything else and the entry is rebuilt. Sizes
+   * come from the index, so nothing is read or rehashed. IDEA.md 4, tier 2.
    */
   async function intact(entry: Entry, deps: [string, Entry][]): Promise<boolean> {
     const nmDir = join(storeDir, entry.key, "node_modules");
-    const pkgDir = join(nmDir, entry.pkg.name);
-    const files = entry.index.files.map(
-      async (file) => (await sizeOf(join(pkgDir, file.path))) === file.size,
-    );
-    if (!(await every(files))) return false;
-
     const links = deps.map(async ([name, dep]) => {
       return (await readLink(join(nmDir, name))) === depTarget(name, dep);
     });
@@ -511,6 +511,10 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       async ([name, bin]) => (await readLink(join(binDir, name))) === relative(binDir, bin.to),
     );
     return await every(placed);
+  }
+
+  async function sized(entry: Entry, at: Store["blobPath"]): Promise<boolean> {
+    return await every(entry.index.files.map(async (f) => (await sizeOf(at(f))) === f.size));
   }
 
   /**

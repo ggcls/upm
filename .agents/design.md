@@ -139,6 +139,11 @@ tree, and retry must remain possible. Do not clean up a worker's destination whi
 another worker can still write into it. Grace periods reduce races; they do not
 prove concurrent deletion safe.
 
+Nothing is fsynced: syncing every blob costs seconds on a cold install, and syncing only
+the index would make an index over lost bytes more likely, not less. Power loss can leave
+an index over short blobs. Linking heals that: an entry whose files are short, over blobs
+that are short too, throws ELINK, and the install refills the store with sizes checked.
+
 ## Optimization must keep the same answer
 
 Metadata parsing shortcuts must select the real registry member, never a lookalike
