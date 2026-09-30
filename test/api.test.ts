@@ -444,6 +444,37 @@ describe("api", () => {
     await expect(upm.resolve(["nanoid"], fresh)).rejects.toMatchObject({ code: "EOFFLINE" });
   });
 
+  it("repairs same-size damage under verify, in the store and in the tree", async () => {
+    await writeFile(join(dir, "package.json"), '{"dependencies":{"nanoid":"^5"}}');
+    await upm.install(base);
+    const file = join(dir, "node_modules", "nanoid", "index.js");
+    const good = await readFile(file, "utf8");
+    const bad = good.toUpperCase();
+
+    // Through the link: the store's inode, so the store's content too. A fresh tree built
+    // without verify believes it.
+    await chmod(file, 0o644);
+    await writeFile(file, bad);
+    await rm(join(dir, "node_modules"), { recursive: true });
+    await upm.install(base);
+    expect(await readFile(file, "utf8")).toBe(bad);
+    expect(await upm.install({ ...base, verify: true })).toMatchObject({ upToDate: false });
+    expect(await readFile(file, "utf8")).toBe(good);
+
+    // Renamed over the link, with the old times: the store never saw it, and only reading
+    // the file tells.
+    const other = `${file}.new`;
+    await writeFile(other, bad);
+    const { atime, mtime } = await stat(file);
+    await utimes(other, atime, mtime);
+    await rename(other, file);
+    expect((await upm.install(base)).upToDate).toBe(true);
+    expect(await upm.install({ ...base, verify: true })).toMatchObject({ upToDate: false });
+    expect(await readFile(file, "utf8")).toBe(good);
+    expect((await upm.install({ ...base, verify: true })).upToDate).toBe(false);
+    expect((await upm.install(base)).upToDate).toBe(true);
+  });
+
   it("fails an offline install missing an optional, rather than skip it", async () => {
     const optionalDependencies = { nanoid: "^5" };
     await writeFile(join(dir, "package.json"), JSON.stringify({ optionalDependencies }));

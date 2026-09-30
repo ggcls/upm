@@ -494,10 +494,16 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
    * npm's `getAction` for our layout: the directory name proves what an entry *should* hold, not
    * what it does. Every file at the size the index recorded (asked first), every dep symlink and
    * every bin pointing where we would point it — anything else and the entry is rebuilt. Sizes
-   * come from the index, so nothing is read or rehashed. IDEA.md 4, tier 2.
+   * come from the index, so nothing is read or rehashed but under `--verify`. IDEA.md 4, tier 2.
    */
   async function intact(entry: Entry, deps: [string, Entry][]): Promise<boolean> {
     const nmDir = join(storeDir, entry.key, "node_modules");
+    // `--verify` reads content too: a file edited or renamed in place keeps its size.
+    if (options.verify) {
+      const { placed } = await import("./verify.ts");
+      if (!placed(store, entry.index.files, join(storeDir, entry.home))) return false;
+    }
+
     const links = deps.map(async ([name, dep]) => {
       return (await readLink(join(nmDir, name))) === depTarget(name, dep);
     });

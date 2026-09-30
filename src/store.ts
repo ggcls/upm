@@ -74,6 +74,8 @@ export interface StoreOptions {
   stall?: number;
   /** Check that stored content still matches its index instead of trusting it. Default false. */
   verify?: boolean;
+  /** Hash every stored file a check reads, not only the ones written since their index. */
+  rehash?: boolean;
   /** A tarball not already here fails with `EOFFLINE` instead of being downloaded. */
   offline?: boolean;
   /** See `StoreBackend`; `backendFailed` is told once when it fails. */
@@ -270,11 +272,11 @@ export function createStore(options: StoreOptions = {}): Store {
   }
 
   /**
-   * Every file the index names, still on disk at the right size. That is one stat per file —
-   * 10,174 of them for `next` — so it is what `--verify` buys and not what every install pays.
-   * Without it a *missing* file still cannot slip through: linking throws ELINK, and install
-   * answers that by refilling the store and linking again. What only this catches is content
-   * that is present but the wrong size.
+   * Every file the index names, still on disk at the right size: what an adopted tarball needs
+   * before its package.json is read. A stat per file — 13,575 for `nuxt`, 50 ms of a warm
+   * install's main thread — so a plain install checks nothing, and `--verify`, or the refill
+   * after a failed link, reads content through `sound` in `verify.ts` instead. A *missing*
+   * file still cannot slip through: linking throws ELINK, and install refills and links again.
    */
   function intact(index: PackageIndex): boolean {
     for (const file of index.files) {
@@ -285,7 +287,11 @@ export function createStore(options: StoreOptions = {}): Store {
 
   async function build(tarball: Tarball, integrity: string): Promise<PackageIndex> {
     const hit = readIndex(integrity);
-    if (hit && (!verify || intact(hit))) return hit;
+    // Sizes are not enough to verify: a file edited in place keeps its size.
+    const check = verify && (await import("./verify.ts"));
+    if (hit && (!check || check.sound(store, hit.files, indexPath(integrity), options.rehash))) {
+      return hit;
+    }
     // A hit that failed the check has damaged content, so rewrite rather than skip. The pool
     // is made here, on the first miss, and starts its threads as tarballs land with no idle
     // one and enough behind them — so an install that finds everything cached never pays

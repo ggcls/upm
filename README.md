@@ -75,7 +75,7 @@ upx cowsay hello                     # run a package's command, installing it if
 upm dedupe                           # reduce duplicate versions already locked
 upm install --production             # skip packages used only by dev dependencies
 upm install --frozen-lockfile        # CI: fail if the lockfile is missing or stale
-upm install --verify                 # check sizes and links, not file hashes
+upm install --verify                 # check file hashes and links, repair damage
 upm install --offline                # no network: install from upm.lock and the store
 upm lock                             # write upm.lock without installing packages
 upm resolve vue@^3                   # show which registry version matches
@@ -680,10 +680,11 @@ To check an installation instead of trusting its saved state:
 upm install --verify
 ```
 
-This checks file sizes, package links, and command-line tool links, and repairs
-problems it detects. It also warns about unmet peer dependency ranges. It does
-**not** check every file's hash, so damage that leaves the file size unchanged can
-go unnoticed. Peer conflicts are reported, not fixed. Downloaded tarballs are
+This hashes every installed and stored file, checks package links and command-line
+tool links, and repairs problems it detects. It also warns about unmet peer dependency
+ranges. Peer conflicts are reported, not fixed. Without `--verify`, stored files are
+trusted once their tarball passed its integrity check, so a file edited through a
+project's hardlink can reach a tree built later from the same store. Downloaded tarballs are
 checked against their integrity before being stored; content from a `storeBackend` is
 checked against its file hashes only, and not at all when the backend is `trusted`.
 

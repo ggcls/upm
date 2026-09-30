@@ -584,6 +584,70 @@ describe("createStore", () => {
       ).toBe(true);
     },
   );
+  describe("under verify", () => {
+    const later = (seconds: number) => new Date(Date.now() + seconds * 1000);
+    async function stored() {
+      const tarball = makeTarball([{ path: "a.js", data: "alpha" }]);
+      const integrity = hashOf(tarball);
+      const cold = createStore({ dir, fetch: stubFetch(tarball) });
+      const { index } = await cold.add("https://reg/p.tgz", integrity);
+      const blob = cold.blobPath(index.files[0]!);
+      await chmod(blob, 0o644); // blobs are read-only, so damage has to be forced
+      /** Whether a store with these options found the content whole, not fetched it again. */
+      const kept = async (options: { rehash?: boolean } = {}) =>
+        (
+          await createStore({ dir, fetch: stubFetch(tarball), verify: true, ...options }).add(
+            "https://reg/p.tgz",
+            integrity,
+          )
+        ).cached;
+      return { blob, index: cold.indexPath(integrity), kept };
+    }
+
+    it("re-extracts over an edit of the same size made since the index", async () => {
+      const { blob, kept } = await stored();
+      await writeFile(blob, "ALPHA");
+      await utimes(blob, later(5), later(5)); // past the index, however coarse the clock
+      expect(await kept()).toBe(false);
+      expect(await readFile(blob, "utf8")).toBe("alpha");
+      expect(await kept()).toBe(true);
+    });
+
+    it("hashes a blob touched since its index once, then believes the times again", async () => {
+      const { blob, index, kept } = await stored();
+      // What the writer does to a blob a later tarball shares, some while after the index.
+      await utimes(index, later(-60), later(-60));
+      await utimes(blob, new Date(), new Date());
+      expect(await kept()).toBe(true);
+      expect((await stat(index)).mtimeMs).toBeGreaterThanOrEqual((await stat(blob)).mtimeMs);
+    });
+
+    it("keeps an edit made after the blob was hashed newer than the index", async () => {
+      const { blob, index, kept } = await stored();
+      await utimes(index, later(-60), later(-60));
+      await utimes(blob, later(-30), later(-30));
+      expect(await kept()).toBe(true);
+      // The index takes the blob's time, not the clock's: an edit landing while the check ran
+      // is still past it.
+      expect((await stat(index)).mtimeMs).toBeLessThan(later(-20).getTime());
+      await writeFile(blob, "ALPHA");
+      await utimes(blob, later(-10), later(-10));
+      expect(await kept()).toBe(false);
+      expect(await readFile(blob, "utf8")).toBe("alpha");
+    });
+
+    it("believes an edit that kept its times, unless every file is hashed", async () => {
+      const { blob, index, kept } = await stored();
+      await writeFile(blob, "ALPHA");
+      // Before the index, as a restore that keeps times leaves it.
+      const before = new Date((await stat(index)).mtimeMs - 1000);
+      await utimes(blob, before, before);
+      expect(await kept()).toBe(true);
+      expect(await kept({ rehash: true })).toBe(false);
+      expect(await readFile(blob, "utf8")).toBe("alpha");
+    });
+  });
+
   it("stores content read-only so a linked file cannot be written through", async () => {
     const tarball = makeTarball([{ path: "a.js", data: "alpha" }]);
     const store = createStore({ dir, fetch: stubFetch(tarball) });

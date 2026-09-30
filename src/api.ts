@@ -1779,7 +1779,9 @@ function openStore(ctx: Context, verify?: boolean): Store {
   const { store: dir, storeBackend: backend } = ctx.options;
   const backendFailed = (error: unknown) => ctx.log(`store backend: ${describe(error)}`, "warn");
   const { noThreads } = ctx;
-  return createStore({ dir, verify, auth, offline, backend, backendFailed, noThreads });
+  // `--verify` hashes what it checks; a refill after a failed link trusts untouched times.
+  const { verify: rehash } = ctx.options;
+  return createStore({ dir, verify, rehash, auth, offline, backend, backendFailed, noThreads });
 }
 
 /** Where each name's tarball is, for a lockfile that does not say. */

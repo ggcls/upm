@@ -5,10 +5,11 @@ compatibility. Keep this page about open work, not completed implementation step
 
 ## Open correctness and usability gaps
 
-- **Stored corruption:** `--verify` checks sizes and links, not file hashes. Same-size
-  damage can spread through shared hardlinks. Decide whether byte verification is a
-  separate mode, then test detection and repair from both a blob and a project file.
-  Start at `src/store.ts` and `src/link.ts`.
+- **Stored corruption:** only `--verify` reads content: it hashes every stored and
+  installed file. A plain install trusts the store, so an edit through a project's hardlink
+  reaches the next tree built from it. A default check costs a stat per file (about 50 ms
+  of a warm `nuxt` on the main thread) plus hashing what the mtime gate in `sound`
+  (`src/verify.ts`) flags; moving it onto the link pool's threads is the next thing to try.
 - **Prune safety and retention:** valid indexes keep content even after every project
   stops using it. Prune can also race an install; the grace period is not a lock.
   Separate reclaiming unused packages from safe concurrent deletion. A fix needs a

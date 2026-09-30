@@ -85,7 +85,7 @@ Options
   -s, --silent         no progress, run banner or install summary (also -q, --loglevel)
   --store <dir>        package store directory
   --verbose            print debug messages (also UPM_DEBUG=1 or on)
-  --verify             install: check sizes, links, bins and peers, not file contents
+  --verify             install: check file contents, links, bins and peers
   -w, --workspace <name|path>
                        add, remove, run: select workspaces (repeatable; parent paths work)
   --workspaces         run: select all workspaces
