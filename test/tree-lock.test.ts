@@ -29,7 +29,9 @@ async function aged(pid: number, seconds: number): Promise<void> {
 describe("holdTree", () => {
   it("makes node_modules, holds the file with its pid and gives it up", async () => {
     const release = await holdTree(nm, () => {});
-    expect(await readFile(held(), "utf8")).toMatch(new RegExp(`^${process.pid} [0-9a-z]+\n$`));
+    expect(await readFile(held(), "utf8")).toMatch(
+      new RegExp(`^${process.pid} [0-9a-z]+( \\S+)?\n$`),
+    );
     await release();
     expect(await readdir(nm)).toEqual([]);
   });
@@ -66,6 +68,34 @@ describe("holdTree", () => {
     )();
     expect(told).toBe(0);
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "takes over at once from a holder that died on this boot, in this pid namespace",
+    async () => {
+      const release = await holdTree(nm, () => {});
+      const where = (await readFile(held(), "utf8")).trim().split(" ")[2];
+      await release();
+      expect(where).toMatch(/^[0-9a-f-]{36}\/pid:\[\d+\]$/);
+      await writeFile(held(), `${DEAD} x ${where}\n`); // fresh, but its pid is gone
+      let told = 0;
+      await (
+        await holdTree(nm, () => told++)
+      )();
+      expect(told).toBe(0);
+      // A live pid there is waited for, and one from another boot gets the old rules.
+      for (const holder of [`${process.pid} x ${where}`, `${DEAD} x other/pid:[1]`]) {
+        await writeFile(held(), `${holder}\n`);
+        let taken = false;
+        const pending = holdTree(nm, () => {}).then((release) => ((taken = true), release));
+        await new Promise((done) => setTimeout(done, 100));
+        expect(taken).toBe(false);
+        await rm(held());
+        await (
+          await pending
+        )();
+      }
+    },
+  );
 
   it("lets one of two waiters take a dead holder's file, and the other wait for it", async () => {
     await aged(DEAD, 11);

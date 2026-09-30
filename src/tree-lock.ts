@@ -8,7 +8,7 @@ export const TREE_HELD = ".upm.linking";
 
 /** How often the holder touches the file, so a waiter can tell it from a dead one. */
 const BEAT = 2000;
-/** Untouched this long and its pid gone here, the holder died. */
+/** Untouched this long and its pid gone here, the holder died. At once when `here()` says so. */
 const STALE = 10_000;
 /**
  * Untouched this long, the holder died whatever its pid says: a pid from another namespace
@@ -20,12 +20,13 @@ const ABANDONED = 60_000;
  * Take `<nm>/.upm.linking`, waiting while another process holds it. `waiting` is told once,
  * when there is a wait. Resolves to the release, which gives the file up only while it is
  * still the one this call made. The file holds the pid and a token: a freed inode is reused
- * at once, so only the token tells one holder's file from the next.
+ * at once, so only the token tells one holder's file from the next. On Linux it also names
+ * where the pid means something, so a waiter there need not wait out STALE for a dead one.
  */
 export async function holdTree(nm: string, waiting: () => void): Promise<() => Promise<void>> {
   const { mkdir, readFile, unlink, utimes, writeFile } = builtin.fsp;
   const path = builtin.path.join(nm, TREE_HELD);
-  const mine = `${pid} ${token()}\n`;
+  const mine = `${[pid, token(), here()].join(" ").trimEnd()}\n`;
   await mkdir(nm, { recursive: true }).catch((error: unknown) => {
     throw cannot(path, error);
   });
@@ -115,12 +116,15 @@ async function takeOver(path: string): Promise<boolean> {
   let judged: string;
   try {
     age = Date.now() - (await stat(path)).mtimeMs;
-    if (age < STALE) return false;
     judged = await readFile(path, "utf8");
   } catch (error) {
     return gone(path, error);
   }
-  const holder = Number.parseInt(judged, 10);
+  const [first = "", , where] = judged.trim().split(" ");
+  const holder = Number.parseInt(first, 10);
+  // Made on this boot and in this pid namespace, a pid that is gone is a holder that died.
+  const local = where !== undefined && where === here();
+  if (!local && age < STALE) return false;
   if (age < ABANDONED && holder > 0 && alive(holder)) return false;
   // Moved aside rather than removed: a second waiter that judged the same dead file must not
   // remove the one the first just made. If what moved was not what we judged, put it back.
@@ -151,4 +155,22 @@ function gone(path: string, error: unknown): boolean {
 function cannot(path: string, error: unknown): Error {
   const reason = (error as Error).message;
   return Object.assign(new Error(`cannot hold ${path}: ${reason}`), { code: "ESTATE" });
+}
+
+let place: string | undefined;
+
+/**
+ * This boot of this machine and this pid namespace, where Linux names them, else "". Two hosts
+ * sharing a tree over NFS have the same root namespace, so the boot id tells them apart.
+ */
+function here(): string {
+  if (place !== undefined) return place;
+  try {
+    const { readFileSync, readlinkSync } = builtin.fs;
+    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    place = `${boot}/${readlinkSync("/proc/self/ns/pid")}`;
+  } catch {
+    place = "";
+  }
+  return place;
 }

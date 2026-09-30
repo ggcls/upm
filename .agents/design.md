@@ -157,9 +157,10 @@ One install at a time rewrites a tree. `node_modules/.upm.linking` is taken with
 create once the link finds the tree must change, never on the no-op path. Its holder touches it
 every 2 s, and gives it up before a signal or an exit ends it. A signal is re-raised only when
 upm alone listens for it: an app that listens decides whether the process ends. A waiter takes
-it over when it is untouched for 10 s and its pid is gone, or for a minute whatever the pid
-says, since a pid from another namespace proves nothing. The store has no lock: an install that
-loses content to a prune fails its link and refills.
+it over when its pid is gone and it names this boot and pid namespace (Linux), when it is
+untouched for 10 s and its pid is gone, or for a minute whatever the pid says, since a pid from
+another namespace proves nothing. The store has no lock: an install that loses content to a
+prune fails its link and refills.
 
 ## Optimization must keep the same answer
 
