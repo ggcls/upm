@@ -74,7 +74,7 @@ compatibility. Keep this page about open work, not completed implementation step
 - **Kept registry documents are never reclaimed:** the store's `metadata` directory keeps
   every document any resolve read, and `prune` walks only `files` and `index`. The same
   retention question as the compile cache and exec projects; one rule could serve all three.
-  A torn file is a miss, so deleting any of them is always safe (one a resolve is reading in
+  A torn or damaged file is a miss, so deleting any of them is always safe (one a resolve is reading in
   parts sends that name to the registry, or fails it offline), and the paths name the
   registry and package, ready for a `upm cache clean <name>`. Start at `src/metadata.ts`.
 - **npm's commands need the network:** `upm publish`, `version`, `login` and the rest run

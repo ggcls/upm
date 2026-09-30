@@ -83,7 +83,7 @@ export async function pruneStore(storeDir: string): Promise<StorePrune> {
   for (const blob of blobs) {
     if (!live.has(blob)) await drop(blob, cutoff, out, "blobs");
   }
-  await sweepSpool(files, cutoff, out);
+  await sweepTemps(files, "", cutoff, out);
   await compact(files);
   await compact(indexes);
   return out;
@@ -94,14 +94,21 @@ export async function pruneStore(storeDir: string): Promise<StorePrune> {
  * to its blob once the tarball verifies. A process killed in between leaves the temp; one whose
  * pid is dead and which is past the grace period is abandoned, by the same rule as `.tmp-*`
  * entries under `.upm`. A live pid, or one this machine cannot see (another pid namespace
- * sharing the store), is left alone.
+ * sharing the store), is left alone. So is `upm.lock.<pid>-<uuid>.tmp`, which a run killed
+ * between writing the lockfile and renaming it in leaves in the project: `prefix` is its start.
  */
-async function sweepSpool(files: string, cutoff: number, out: StorePrune): Promise<void> {
-  for (const found of await list(files)) {
-    if (!found.isFile() || !found.name.endsWith(".tmp")) continue;
-    const pid = Number(found.name.split("-")[0]);
+export async function sweepTemps(
+  dir: string,
+  prefix = "",
+  cutoff = Date.now() - GRACE_MS,
+  out: StorePrune = { blobs: 0, indexes: 0, bytes: 0 },
+): Promise<void> {
+  for (const found of await list(dir)) {
+    const { name } = found;
+    if (!found.isFile() || !name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
+    const pid = Number(name.slice(prefix.length).split("-")[0]);
     if (!Number.isInteger(pid) || pid <= 0 || alive(pid)) continue;
-    await drop(builtin.path.join(files, found.name), cutoff, out, "blobs");
+    await drop(builtin.path.join(dir, name), cutoff, out, "blobs");
   }
 }
 

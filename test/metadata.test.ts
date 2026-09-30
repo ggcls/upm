@@ -41,6 +41,8 @@ let control: string;
 let age: string | undefined;
 /** Each request, as `status url`. */
 let log: string[];
+/** What `/foo` sends instead of `doc`, when set. */
+let sent: string | undefined;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "upm-metadata-"));
@@ -48,9 +50,10 @@ beforeEach(async () => {
   control = "public, max-age=0";
   age = undefined;
   log = [];
+  sent = undefined;
   server = createServer((request, response) => {
     const url = request.url ?? "";
-    const body = url === "/foo" ? JSON.stringify(doc) : undefined;
+    const body = url === "/foo" ? (sent ?? JSON.stringify(doc)) : undefined;
     const etag = body && `"${body.length}-${doc["dist-tags"]!.latest}"`;
     const status = !body ? 404 : request.headers["if-none-match"] === etag ? 304 : 200;
     log.push(`${status} ${url}`);
@@ -259,15 +262,54 @@ describe("kept registry documents", () => {
     await writeFile(corgiFile(), bytes);
     expect(await pick("only", "foo@^1")).toBe("1.1.0");
     expect(await pick("only", "foo@~1.1")).toBe("1.1.0");
-    // The whole parse, which a range nothing satisfies needs for its error, finds the damage.
-    await expect(pick("only", "foo@^3")).rejects.toMatchObject({ code: "EJSONPARSE" });
-    // A damaged version the pick wants is an error, never the next one down.
-    await expect(pick("only", "foo@^2")).rejects.toMatchObject({ code: "EJSONPARSE" });
-    await expect(pick("only", "foo@*")).rejects.toMatchObject({ code: "EJSONPARSE" });
-    // So is a pin, read off a peek the registry answers with a 304.
-    const pinned = run("revalidate").pick!(parseSpec("foo@2.0.0"), "2.0.0");
-    await expect(pinned).rejects.toMatchObject({ code: "EJSONPARSE" });
-    expect(log.slice(1)).toEqual(["404 /foo/2.0.0", "304 /foo"]);
+    // The whole parse, which a range nothing satisfies needs for its error, finds the damage:
+    // offline, the damaged document is then a miss.
+    await expect(pick("only", "foo@^3")).rejects.toMatchObject({ code: "EOFFLINE" });
+    // A damaged version the pick wants is a miss too, never the next one down.
+    await expect(pick("only", "foo@^2")).rejects.toMatchObject({ code: "EOFFLINE" });
+    await expect(pick("only", "foo@*")).rejects.toMatchObject({ code: "EOFFLINE" });
+    // Online, a pin read off a peek the registry answers with a 304 asks again, without the
+    // ETag, and keeps what comes back.
+    expect((await run("revalidate").pick!(parseSpec("foo@2.0.0"), "2.0.0")).version).toBe("2.0.0");
+    expect(log.slice(1)).toEqual(["404 /foo/2.0.0", "304 /foo", "200 /foo"]);
+    expect(await pick("only", "foo@*")).toBe("2.0.0");
+  });
+
+  it("asks afresh for a document cut short on disk, and misses it offline", async () => {
+    await pick("revalidate", "foo@^1");
+    const bytes = await readFile(corgiFile());
+    await writeFile(corgiFile(), bytes.subarray(0, bytes.length - 20));
+    await expect(pick("only", "foo@^1")).rejects.toMatchObject({ code: "EOFFLINE" });
+    expect(await pick("prefer", "foo@^1")).toBe("1.0.0");
+    expect(log).toEqual(["200 /foo", "200 /foo"]);
+    expect(await pick("only", "foo@^1")).toBe("1.0.0");
+  });
+
+  it("asks once for a kept document that does not parse, and blames what the registry sends", async () => {
+    await pick("revalidate", "foo@^1");
+    // One quote gone inside the version: the ends and the head still look right.
+    const text = (await readFile(corgiFile(), "utf8")).replace('"sha512-x"', 'sha512-x"');
+    await writeFile(corgiFile(), text);
+    // Picks that share the damaged read each get the document asked for once.
+    const registry = run("prefer");
+    const picked = await Promise.all(
+      ["foo@^1", "foo@1.x", "foo@*"].map((spec) => registry.pick!(parseSpec(spec))),
+    );
+    expect(picked.map((found) => found.version)).toEqual(["1.0.0", "1.0.0", "1.0.0"]);
+    expect(log).toEqual(["200 /foo", "200 /foo"]);
+
+    // Damaged on disk, then sent damaged: the registry's error, after one request.
+    await writeFile(corgiFile(), text);
+    sent = text.slice(text.indexOf("\n") + 1);
+    await expect(pick("prefer", "foo@^1")).rejects.toMatchObject({
+      code: "EJSONPARSE",
+      message: expect.stringMatching(/^Registry sent invalid JSON/),
+    });
+    expect(log).toEqual(["200 /foo", "200 /foo", "200 /foo"]);
+    // With no kept document, a bad body is the registry's at once.
+    await rm(join(dir, "metadata"), { recursive: true });
+    await expect(pick("revalidate", "foo@^1")).rejects.toMatchObject({ code: "EJSONPARSE" });
+    expect(log).toHaveLength(4);
   });
 
   it("reads a document kept before heads had an index, and gives it one on a 304", async () => {
@@ -528,6 +570,14 @@ describe("a big document, read in parts", () => {
     expect(kept.read!(0, 10)).toBeDefined();
     expect(kept.read!(400_000, 400_010)).toBeUndefined();
     expect(() => kept.bytes).toThrow(expect.objectContaining({ code: "ECHANGED" }));
+  });
+
+  it("takes one cut short as a miss, by its tail", async () => {
+    const bytes = await readFile(corgiFile());
+    await writeFile(corgiFile(), bytes.subarray(0, bytes.length - 50));
+    await expect(version(run("only"), "foo@^1")).rejects.toMatchObject({ code: "EOFFLINE" });
+    expect((await version(run("prefer"), "foo@^1")).version).toBe("1.299.9");
+    expect(log).toEqual(["200 /foo", "200 /foo"]);
   });
 
   it("asks the registry for a document removed while it is read, unless offline", async () => {

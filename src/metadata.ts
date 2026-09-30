@@ -155,7 +155,10 @@ export function createDocumentCache(options: MetadataOptions): DocumentCache {
     const { at, etag, maxAge, end } = head;
     const index = Array.isArray(head.index) ? head.index : undefined;
     const from = end + 1;
-    if (!tail) return { bytes: first.subarray(from), etag, at, maxAge, index };
+    const body = first.subarray(from);
+    // Cut short, it is a miss: `set` kept only what ends as a document does.
+    if (!document(tail ? concat([encoder.encode("{"), tail]) : body)) return undefined;
+    if (!tail) return { bytes: body, etag, at, maxAge, index };
     // Not spread: that would read `bytes` whole.
     return Object.assign(inParts(file, stat!, from, first, tail), { etag, at, maxAge, index });
   }

@@ -311,7 +311,9 @@ without a request within the `max-age` the registry sent (five minutes on npmjs)
 `min-release-age` is on, for as long as it was fetched after the cutoff: any version it lacks
 is too new to pick. After that, upm asks with its ETag and reuses it on a `304`. A tag
 written out, such as `upm exec foo@latest`, is always asked about. When a document used
-without asking cannot satisfy a range or pin, upm asks the registry once.
+without asking cannot satisfy a range or pin, upm asks the registry once. A kept document
+that is damaged, such as cut short or no longer valid JSON, is treated as missing: upm asks
+the registry for it again, or fails with `EOFFLINE` under `--offline`.
 
 `--offline` never uses the network. An install from a current lockfile works when the
 store already holds its packages, which a past install on the same machine leaves there.

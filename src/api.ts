@@ -4,7 +4,7 @@
 import { builtin } from "./builtin.ts";
 import { readConfig } from "./config.ts";
 import type { Config } from "./config.ts";
-import { pruneStore, sweepEntries } from "./gc.ts";
+import { pruneStore, sweepEntries, sweepTemps } from "./gc.ts";
 import { shortHash } from "./keys.ts";
 import { linkTree, treeStanding } from "./link.ts";
 import type { LinkPool } from "./link.ts";
@@ -761,7 +761,7 @@ async function restoreLock(ctx: Context, project: Project, state?: InstallState)
       return;
     }
   }
-  await writeLockfile(dir, text);
+  await writeLock(dir, text);
   ctx.source = { path: source.path };
   ctx.log(`wrote ${LOCKFILE} ← node_modules`, "info");
 }
@@ -1482,7 +1482,7 @@ async function resolveLock(
     const dropped = Object.keys(locked.packages).length - Object.keys(lock.packages).length;
     if (dropped > 0) log(`dropped ${dropped} packages`, "info");
   }
-  await writeLockfile(dir, lock);
+  await writeLock(dir, lock);
   log(`wrote ${LOCKFILE} · ${counts(lock)}`, "info");
   return lock;
 }
@@ -1534,7 +1534,7 @@ async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile
     ctx.log(counts(lock), "info");
     return lock;
   }
-  await writeLockfile(dir, text);
+  await writeLock(dir, text);
   ctx.log(`wrote ${LOCKFILE} · ${counts(lock)}`, "info");
   return lock;
 }
@@ -1703,12 +1703,27 @@ async function loadManifest(
   return { file, raw, manifest: parseManifest(raw, file) };
 }
 
+/** The lockfile, and what a run killed while writing one left beside it. */
+async function writeLock(dir: string, lock: Lockfile | string): Promise<void> {
+  await writeLockfile(dir, lock);
+  await sweepTemps(dir, `${LOCKFILE}.`).catch(() => {}); // tidying, never worth failing for
+}
+
+/** Through a rename, so a crash never leaves half a package.json: at a link's target, in its mode. */
 async function saveManifest({ file, raw, manifest }: Edit): Promise<void> {
   const text = formatManifest(manifest, raw);
   if (text === raw) return;
+  const { fsp } = builtin;
+  let temp: string | undefined;
   try {
-    await builtin.fsp.writeFile(file, text);
+    const target = await fsp.realpath(file);
+    const mode = (await fsp.stat(target)).mode & 0o7777;
+    temp = `${target}.${pid}-${globalThis.crypto.randomUUID()}.tmp`;
+    await fsp.writeFile(temp, text, { mode });
+    await fsp.chmod(temp, mode); // past the umask
+    await replaceFile(temp, target);
   } catch (error) {
+    if (temp) await fsp.rm(temp, { force: true });
     throw fail(`cannot write ${file}: ${(error as Error).message}`, "EMANIFEST");
   }
 }

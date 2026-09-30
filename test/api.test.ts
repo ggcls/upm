@@ -1,8 +1,11 @@
 // The commands as functions, against a local registry: every CLI command has one.
 import { Buffer } from "node:buffer";
 import {
+  chmod,
+  lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -153,6 +156,44 @@ describe("api", () => {
     await expect(upm.fetchPackages(["missing", "bad name@1"], base)).rejects.toMatchObject({
       code: "EINVALIDSPEC",
     });
+  });
+
+  it("writes package.json through a rename, keeping its text, mode and link", async () => {
+    await mkdir(join(dir, "real"));
+    const raw = '{\n\t"name": "demo",\n\t"private": true\n}';
+    await writeFile(join(dir, "real", "package.json"), raw, { mode: 0o640 });
+    await chmod(join(dir, "real", "package.json"), 0o640);
+    await symlink(join("real", "package.json"), join(dir, "package.json"));
+    const { ino } = await stat(join(dir, "real", "package.json"));
+    await upm.add(["nanoid"], base);
+    // A new file renamed in: never the old one written over, which a crash would leave half.
+    expect((await stat(join(dir, "real", "package.json"))).ino).not.toBe(ino);
+    const text = await readFile(join(dir, "real", "package.json"), "utf8");
+    expect(text).toBe(
+      '{\n\t"name": "demo",\n\t"private": true,\n\t"dependencies": {\n\t\t"nanoid": "^5.0.0"\n\t}\n}',
+    );
+    expect((await lstat(join(dir, "package.json"))).isSymbolicLink()).toBe(true);
+    expect((await stat(join(dir, "real", "package.json"))).mode & 0o777).toBe(0o640);
+    expect(await readdir(join(dir, "real"))).toEqual(["package.json"]);
+  });
+
+  it("sweeps a lockfile temp a dead run left, once it is an hour old", async () => {
+    await writeFile(join(dir, "package.json"), '{"dependencies":{"nanoid":"^5.0.0"}}');
+    const dead = 2 ** 22 + 1; // past any pid_max
+    const hourAgo = new Date(Date.now() - 61 * 60 * 1000);
+    const [old, young, live, other] = [
+      `upm.lock.${dead}-a.tmp`,
+      `upm.lock.${dead}-b.tmp`,
+      `upm.lock.${process.pid}-c.tmp`,
+      `other.${dead}-d.tmp`,
+    ];
+    for (const name of [old, young, live, other]) {
+      await writeFile(join(dir, name), "{");
+      if (name !== young) await utimes(join(dir, name), hourAgo, hourAgo);
+    }
+    await upm.install(base);
+    const left = (await readdir(dir)).filter((name) => name.endsWith(".tmp"));
+    expect(left.sort()).toEqual([young!, live!, other!].sort());
   });
 
   it("adds, installs, locks, fetches the lock, dedupes, removes and prunes", async () => {

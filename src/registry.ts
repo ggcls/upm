@@ -240,6 +240,10 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   const rechecked = new Set<string>();
   /** Requests a kept document answered unasked in this run, by key. */
   const served = new Set<string>();
+  /** Names a kept document answered, unasked or on a 304: a parse failure may be its damage. */
+  const answered = new Set<string>();
+  /** Names whose kept documents did not parse: passed over from then on. */
+  const corrupt = new Set<string>();
 
   /**
    * The kept document for a request, and whether it answers without one. When it does not, its
@@ -247,7 +251,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
    * field the other has.
    */
   function kept(name: string, url: string, accept: string): Found {
-    if (!cache) return { use: false };
+    if (!cache || corrupt.has(name)) return { use: false };
     const doc = cache.get(keyOf(url, accept));
     if (rechecked.has(name)) return { doc, use: false };
     const full = !doc && accept === CORGI ? cache.get(keyOf(url, FULL)) : undefined;
@@ -255,6 +259,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     if (!found || !current(name, found)) return { doc, use: false };
     // Fresh or not, it may predate a publish: `pick` asks once when it falls short.
     unasked.add(name);
+    answered.add(name);
     return { doc: found, use: true, full: full !== undefined };
   }
 
@@ -273,7 +278,8 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
    * The registry said a kept document has not changed. One kept before heads had an index is
    * written again with one (`touch`), so one read in parts is read on from the new file.
    */
-  function touched(key: string, doc: Kept, response: Response): Kept {
+  function touched(name: string, key: string, doc: Kept, response: Response): Kept {
+    answered.add(name);
     cache!.touch(key, currentAt(response));
     return (doc.read && !doc.index && cache!.get(key)) || doc;
   }
@@ -334,7 +340,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
           );
           continue;
         }
-        if (response.status === 304 && doc) return touched(keyOf(url, accept), doc, response);
+        if (response.status === 304 && doc) return touched(name, keyOf(url, accept), doc, response);
         if (response.ok) return keep(url, accept, response, await body(response, url));
         if (response.status === 404) {
           throw fail(`Package "${name}" not found in registry`, "E404");
@@ -409,7 +415,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
         clearTimeout(late);
       }
       if (response.status === 304 && doc) {
-        return hit(touched(keyOf(url, accept), doc, response));
+        return hit(touched(name, keyOf(url, accept), doc, response));
       }
       if (!response.ok && isThrottle(response.status)) signal.throttled();
       if (!response.ok || !response.body) return undefined;
@@ -620,13 +626,21 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   /**
    * Once more, afresh, when a document kept in parts could not be read on (`Kept.read`): what
    * its head said no longer says where to read. The name's documents are dropped, so the next
-   * read is of the file as it is now, or a request.
+   * read is of the file as it is now, or a request. So too when a document does not parse and
+   * a kept one answered: the name's kept documents are passed over from then on, so one damaged
+   * on disk is asked for (offline, a miss), and one the registry sends so fails as its error. A
+   * call begun before then, sharing the failed read, asks again too.
    */
   async function again<T>(name: string, ask: () => Promise<T>): Promise<T> {
+    const passed = corrupt.has(name);
     try {
       return await ask();
     } catch (error) {
-      if ((error as { code?: string }).code !== "ECHANGED") throw error;
+      const { code } = error as { code?: string };
+      const damaged = code === "EJSONPARSE" && !passed && answered.has(name);
+      if (code !== "ECHANGED" && !damaged) throw error;
+      if (damaged && corrupt.has(name)) return await ask(); // another call dropped them
+      if (damaged) corrupt.add(name);
       for (const memos of [corgis, peeks, fullPeeks, aged, documents]) memos.delete(name);
       return await ask();
     }
