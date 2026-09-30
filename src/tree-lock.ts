@@ -49,10 +49,58 @@ export async function holdTree(nm: string, waiting: () => void): Promise<() => P
     utimes(path, now, now).catch(() => {});
   }, BEAT);
   beat.unref?.();
+  const file = { path, mine };
+  holding(file, true);
   return async () => {
     clearInterval(beat);
+    holding(file, false);
     if ((await readFile(path, "utf8").catch(() => "")) === mine) await unlink(path).catch(() => {});
   };
+}
+
+/** What a terminal, a CI timeout or `docker stop` ends an install with. */
+const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+/** The files this process holds, all under one listener per event however many there are. */
+const held = new Set<{ path: string; mine: string }>();
+
+function holding(file: { path: string; mine: string }, on: boolean): void {
+  const was = held.size > 0;
+  if (on) held.add(file);
+  else held.delete(file);
+  if (was !== held.size > 0) listen(on);
+}
+
+function listen(on: boolean): void {
+  const proc = globalThis.process;
+  for (const signal of SIGNALS) proc[on ? "on" : "off"](signal, dying);
+  proc[on ? "on" : "off"]("exit", giveUp);
+}
+
+/**
+ * A signal ends the process without `finally`, and the next install would wait out STALE: give
+ * the files up and die of the signal as before. When someone else listens for it, they decide
+ * whether the process ends, and the files stay held until the install lets go or it exits.
+ */
+function dying(signal: NodeJS.Signals): void {
+  const proc = globalThis.process;
+  if (proc.listenerCount(signal) > 1) return;
+  giveUp();
+  try {
+    proc.kill(pid, signal);
+  } catch {
+    proc.exit(128 + (builtin.os.constants.signals[signal] ?? 0)); // Windows cannot send SIGHUP
+  }
+}
+
+function giveUp(): void {
+  for (const { path, mine } of held) {
+    try {
+      if (builtin.fs.readFileSync(path, "utf8") === mine) builtin.fs.unlinkSync(path);
+    } catch {}
+  }
+  held.clear();
+  listen(false);
 }
 
 /** Unique enough to tell two holders apart, and no crypto to load on a link that builds nothing. */

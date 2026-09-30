@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -141,6 +142,72 @@ describe("holdTree", () => {
     await (
       await next
     )();
+  });
+
+  /** A process holding the file, after `before` has run. */
+  async function holder(before = "") {
+    const lock = new URL("../src/tree-lock.ts", import.meta.url).href;
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `const { holdTree } = await import(${JSON.stringify(lock)});
+        ${before}
+        await holdTree(${JSON.stringify(nm)}, () => {});
+        console.log("held");
+        setInterval(() => {}, 1000);`,
+      ],
+      { stdio: ["ignore", "pipe", "inherit"] },
+    );
+    let out = "";
+    await new Promise((done) =>
+      child.stdout.on("data", (chunk) => {
+        out += chunk;
+        if (out.includes("held")) done(undefined);
+      }),
+    );
+    expect(await readdir(nm)).toEqual([TREE_HELD]);
+    const end = await new Promise<[number | null, string | null]>((done) => {
+      child.once("exit", (...end) => done(end));
+      child.kill("SIGINT");
+    });
+    return { end, out };
+  }
+
+  // Windows has no signal to send a process but a forced end.
+  it.skipIf(process.platform === "win32")(
+    "gives the file up when a signal ends the process, and dies of it",
+    async () => {
+      expect((await holder()).end).toEqual([null, "SIGINT"]);
+      expect(await readdir(nm)).toEqual([]);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "leaves a signal someone else listens for to them, and gives the file up on exit",
+    async () => {
+      const { end, out } = await holder(`const { existsSync } = await import("node:fs");
+        process.on("SIGINT", () => {
+          console.log(existsSync(${JSON.stringify(held())}) ? "kept" : "lost");
+          process.exit(7);
+        });`);
+      expect(end).toEqual([7, null]);
+      expect(out).toContain("kept");
+      expect(await readdir(nm)).toEqual([]);
+    },
+  );
+
+  it("listens once however many trees it holds, and not at all once they are let go", async () => {
+    const events = ["SIGINT", "SIGTERM", "SIGHUP", "exit"] as const;
+    const count = () => events.map((event) => process.listenerCount(event));
+    const before = count();
+    const releases = await Promise.all(
+      Array.from({ length: 12 }, (_, i) => holdTree(join(nm, `${i}`), () => {})),
+    );
+    expect(count()).toEqual(before.map((n) => n + 1));
+    for (const release of releases) await release();
+    expect(count()).toEqual(before);
   });
 
   it("leaves a file it no longer holds to the process that took it over", async () => {
