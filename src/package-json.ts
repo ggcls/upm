@@ -86,6 +86,22 @@ export function formatManifest(manifest: RootManifest, raw: string): string {
   return raw.endsWith("\n") ? `${text}${eol}` : text;
 }
 
+/**
+ * The root fields that change the tree another manager installs, which upm does not apply.
+ * Said so the tree is not quietly other than the one they ask for.
+ */
+export function unapplied(manifest: RootManifest): string[] {
+  const m = manifest as Record<string, unknown> & { pnpm?: Record<string, unknown> };
+  const set = (value: unknown) =>
+    value !== null && typeof value === "object" && Object.keys(value).length > 0;
+  return [
+    ...["overrides", "resolutions", "patchedDependencies"].filter((key) => set(m[key])),
+    ...["overrides", "packageExtensions", "patchedDependencies"]
+      .filter((key) => set(m.pnpm?.[key]))
+      .map((key) => `pnpm.${key}`),
+  ];
+}
+
 /** A group that ends up empty goes with its last name, rather than staying as `{}`. */
 function drop(manifest: RootManifest, group: Group, name: string): boolean {
   const map = manifest[group];

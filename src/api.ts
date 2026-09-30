@@ -22,7 +22,14 @@ import {
   writeLockfile,
 } from "./lock.ts";
 import type { ForeignFile, Lockfile } from "./lock.ts";
-import { addDeps, formatManifest, parseManifest, removeDeps, saveRange } from "./package-json.ts";
+import {
+  addDeps,
+  formatManifest,
+  parseManifest,
+  removeDeps,
+  saveRange,
+  unapplied,
+} from "./package-json.ts";
 import type { Added, Group } from "./package-json.ts";
 import { pickManifest } from "./pick.ts";
 import { createRegistry, hosts } from "./registry.ts";
@@ -1441,6 +1448,7 @@ async function plan(
     if (ctx.dedupe) throw (await import("./foreign-lock.ts")).beside(foreign, "dedupe");
     return await foreignLock(ctx, project, foreign);
   }
+  warnUnapplied(ctx, manifest);
   const existing = frozen
     ? await readLockfile(dir)
     : (ctx.restored ?? (await currentLock(ctx, dir)));
@@ -1466,6 +1474,17 @@ async function plan(
     return await resolveLock(ctx, project, existing, registry, walk, moved);
   } finally {
     registry.close();
+  }
+}
+
+/**
+ * For `upm.lock` only: another manager's lockfile was resolved with these fields applied. Not
+ * on a no-op install, since the install that last read package.json said it already.
+ */
+function warnUnapplied(ctx: Context, manifest: RootManifest): void {
+  const fields = unapplied(manifest);
+  if (fields.length > 0) {
+    ctx.log(`ignoring ${fields.join(", ")} in package.json: upm does not apply them`, "warn");
   }
 }
 
@@ -1530,6 +1549,7 @@ async function lockProject(ctx: Context, options: LockOptions): Promise<Lockfile
     ctx.log(`✓ ${foreign} · ${counts(locked)}`, "info");
     return locked;
   }
+  warnUnapplied(ctx, manifest);
   const existing = await currentLock(ctx, dir);
   const store = openStore(ctx);
   const tarball = tarballReader(ctx, dir, store);

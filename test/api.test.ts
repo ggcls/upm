@@ -111,6 +111,47 @@ describe("api", () => {
     expect((await upm.fetchPackages(["nanoid"], base))[0]!.cached).toBe(true);
   });
 
+  it("says which package.json fields that change the tree it does not apply", async () => {
+    const manifest = {
+      dependencies: { nanoid: "^5" },
+      overrides: { nanoid: "5.0.0" },
+      resolutions: {},
+      pnpm: { overrides: { nanoid: "5.0.0" }, patchedDependencies: { a: "a.patch" } },
+    };
+    await writeFile(join(dir, "package.json"), JSON.stringify(manifest));
+    const said =
+      "ignoring overrides, pnpm.overrides, pnpm.patchedDependencies in package.json: upm does not apply them";
+    await upm.install(base);
+    expect(lines).toContain(said);
+    // A no-op install read nothing new, so it says nothing new.
+    lines.length = 0;
+    expect(await upm.install(base)).toMatchObject({ upToDate: true });
+    expect(lines).not.toContain(said);
+    // A lockfile that still stands is no reason to be quiet about it.
+    lines.length = 0;
+    await upm.lock(base);
+    expect(lines).toContain(said);
+    await upm.install({ ...base, frozen: true, verify: true });
+    expect(lines.filter((line) => line === said)).toHaveLength(2);
+    // npm's lockfile was resolved with its overrides applied: nothing to say there.
+    await rm(join(dir, "upm.lock"));
+    const npm = { dependencies: manifest.dependencies, overrides: manifest.overrides };
+    await writeFile(join(dir, "package.json"), JSON.stringify(npm));
+    const nanoid = {
+      version: "5.0.0",
+      resolved: `${registry()}/nanoid/-/nanoid-5.0.0.tgz`,
+      integrity: hashOf(tarball),
+    };
+    const packages = { "": npm, "node_modules/nanoid": nanoid };
+    await writeFile(
+      join(dir, "package-lock.json"),
+      JSON.stringify({ lockfileVersion: 3, packages }),
+    );
+    lines.length = 0;
+    await upm.install({ ...base, verify: true });
+    expect(lines.filter((line) => line.startsWith("ignoring"))).toEqual([]);
+  });
+
   it("resolves a workspace root on threads opened before the workspaces are read", async () => {
     const ws = (name: string) =>
       JSON.stringify({ name, version: "1.0.0", dependencies: { nanoid: "^5" } });
