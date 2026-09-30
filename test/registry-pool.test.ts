@@ -145,14 +145,18 @@ function pool(options: PoolOptions = {}): RegistryPool {
 }
 
 /**
- * The threads are up. The first question starts them and ran here; a name asked before they
- * are up stays here, so this is a name nothing else asks about.
+ * The threads are up, or have failed. The first three names are answered here and the fourth
+ * starts the threads; a name asked before they are up stays here, so these are names nothing
+ * else asks about. `boot4` to `boot7` land on every thread of two or three, and each waits
+ * for its thread's hello, its death or the grace.
  */
 async function ready(p: RegistryPool): Promise<void> {
-  for (const name of ["boot1", "boot2", "boot3", "boot4"]) {
+  for (const name of ["boot1", "boot2", "boot3"]) {
     expect(await p.pinned(name, "0.0.0")).toBeUndefined();
   }
-  await new Promise((done) => setTimeout(done, 600));
+  const names = ["boot4", "boot5", "boot6", "boot7"];
+  const found = await Promise.all(names.map((name) => p.pinned(name, "0.0.0")));
+  expect(found).toEqual([undefined, undefined, undefined, undefined]);
 }
 
 async function codeOf(promise: Promise<unknown>): Promise<string | undefined> {
