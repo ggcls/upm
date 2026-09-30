@@ -343,3 +343,17 @@ pairs the new build won.
   primed store answers most picks unasked for a day even without `--prefer-offline`.
 - It holds `.work/ab/.lock` (via `flock`), so two runs on one machine wait for each other.
 - Use ten or more pairs before claiming a result: [../.agents/perf.md](../.agents/perf.md).
+
+## Startup and install profile: `profile.sh`
+
+```sh
+bench/profile.sh                  # 20 runs, `upm i` repeat on tiny
+bench/profile.sh -n 50 -f nitro --warm
+```
+
+Builds `dist/` once, then times an empty Node script, `upm --version` and `upm i` in rounds,
+printing min/median/max wall time, peak RSS and CPU for each, and the median difference from
+bare Node. It needs only bash and Node, so it runs on CI images without Perl: the harness
+times spawn to reap, and a `--require` hook writes each child's `process.resourceUsage()` at
+exit. The hook costs about 1 ms per start, the same for every command. `--warm` and `--cold`
+reset the project before each install as in `ab.sh`; see the script's header for options.
