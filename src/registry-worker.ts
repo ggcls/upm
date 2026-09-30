@@ -25,12 +25,13 @@ if (port) {
     void answer(registry, question).then(
       (found) => port.postMessage({ id: question.id, found } satisfies Answer),
       (error: unknown) => {
-        const { message, code, status } = error as {
+        const { message, code, status, stack } = error as {
           message?: string;
           code?: string;
           status?: number;
+          stack?: string;
         };
-        const failed = { message: String(message ?? error), code, status };
+        const failed = { message: String(message ?? error), code, status, stack };
         port.postMessage({ id: question.id, failed } satisfies Answer);
       },
     );

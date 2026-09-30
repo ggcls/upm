@@ -289,6 +289,14 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     (view.installed === undefined || view.installed === true);
   const progress = busy ? progressOf(view.installed === true) : undefined;
   const problems = useMemo(() => problemsOf(view), [view]);
+  // The console maps the stack through the sourcemaps, which the Problems panel cannot.
+  useEffect(() => {
+    for (const { source, error } of problems) {
+      if (!error || logged.has(error)) continue;
+      logged.add(error);
+      console.error(`[${source}]`, error);
+    }
+  }, [problems]);
   // A bare name shows the version it resolved to, while the box still holds that run's spec.
   const top = view?.top instanceof Error ? undefined : view?.top;
   const version = top && spec === view?.spec && spec.trim() === view.name ? top.version : undefined;
@@ -451,6 +459,9 @@ function narrow(): boolean {
   return innerWidth < 640;
 }
 
+/** Errors already in the console: a view is set again on every update. */
+const logged = new WeakSet<Error>();
+
 /** Each failed part once (a failed walk fails the parts after it with the same error), then the warnings. */
 function problemsOf(view: View | undefined): Problem[] {
   if (!view) return [];
@@ -465,7 +476,7 @@ function problemsOf(view: View | undefined): Problem[] {
   ] as const) {
     if (!(part instanceof Error) || seen.has(part)) continue;
     seen.add(part);
-    problems.push({ level: "error", source, message: part.message });
+    problems.push({ level: "error", source, message: part.message, error: part });
   }
   const done = view.resolved instanceof Error ? undefined : view.resolved;
   for (const message of done?.resolution.warnings ?? []) {

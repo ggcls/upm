@@ -131,7 +131,11 @@ class Thread {
     this.#worker.onmessageerror = () => this.#fail(new Error("a message could not be read"));
     this.#worker.onerror = (event) => {
       event.preventDefault();
-      this.#fail(new Error(event.message || `upm's ${name} worker failed to load`));
+      const error = new Error(event.message || `upm's ${name} worker failed to load`);
+      // The event carries no stack across threads, only where it was thrown.
+      if (event.filename)
+        error.stack += `\n    at ${event.filename}:${event.lineno}:${event.colno}`;
+      this.#fail(error);
     };
     this.#worker.postMessage({ name, workerData, process } satisfies Boot);
   }

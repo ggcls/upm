@@ -47,6 +47,8 @@ export default defineConfig({
   // src/lib/thread.ts loads upm's worker only once its `process` is in place: a lazy chunk,
   // which the default iife format cannot split out.
   worker: { format: "es", plugins: () => [workers] },
+  // Workers build as the client environment too, so they get maps as well.
+  environments: { client: { build: { sourcemap: true } } },
   resolve: {
     alias: [
       { find: /^upm\/resolver$/, replacement: `${src}resolver.ts` },

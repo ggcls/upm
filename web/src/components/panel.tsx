@@ -11,6 +11,7 @@ export interface Problem {
   level: "error" | "warning";
   source: string;
   message: string;
+  error?: Error;
 }
 
 /** Stays mounted while closed (no `tab`), so it keeps the height it was dragged to. */
@@ -186,10 +187,20 @@ function Problems({ problems }: { problems: Problem[] }) {
             name={problem.level}
             className={`mt-px size-3.5 ${problem.level === "error" ? "text-red-500" : "text-amber-500"}`}
           />
-          <span className="min-w-0 font-mono break-words">{problem.message}</span>
+          <div className="min-w-0 font-mono break-words">
+            {problem.message}
+            {problem.error && <Stack error={problem.error} />}
+          </div>
           <span className="ml-auto shrink-0 text-zinc-400">{problem.source}</span>
         </li>
       ))}
     </ul>
   );
+}
+
+/** The frames only: V8 starts a stack with the message, which the line above already shows. */
+function Stack({ error }: { error: Error }) {
+  const stack = error.stack?.replace(`${error.name}: ${error.message}\n`, "").trimEnd();
+  if (!stack || stack === `${error.name}: ${error.message}`) return null;
+  return <pre className="mt-1 whitespace-pre-wrap text-zinc-500">{stack}</pre>;
 }

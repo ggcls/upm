@@ -69,7 +69,7 @@ export interface Answer {
   /** -1 is the thread saying it loaded: the pool hands it work only from then on. */
   id: number;
   found?: Manifest;
-  failed?: { message: string; code?: string; status?: number };
+  failed?: { message: string; code?: string; status?: number; stack?: string };
   /** Not an answer: the thread's registry calling `undated`. */
   undated?: string;
 }
@@ -340,7 +340,13 @@ function hash(name: string): number {
 }
 
 function rebuild(failed: NonNullable<Answer["failed"]>): Error {
-  return Object.assign(new Error(failed.message), { code: failed.code, status: failed.status });
+  const error = Object.assign(new Error(failed.message), {
+    code: failed.code,
+    status: failed.status,
+  });
+  // The thread's stack, where it went wrong, not this one's.
+  if (failed.stack) error.stack = failed.stack;
+  return error;
 }
 
 function fail(message: string, code: string): Error {

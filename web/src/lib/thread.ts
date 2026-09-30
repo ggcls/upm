@@ -55,6 +55,8 @@ async function start({ name, workerData, process }: Boot): Promise<void> {
     if (name === "registry") await import("upm/src/registry-worker.ts");
     else throw new Error(`no ${name} worker in a tab`);
   } catch (error) {
+    // The page's `error` event gets the message only: the stack goes to this worker's console.
+    console.error(error);
     // Thrown from a task, it reaches the page as the worker's `error` event.
     setTimeout(() => {
       throw error;
