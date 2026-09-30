@@ -353,7 +353,11 @@ bench/profile.sh -n 50 -f nitro --warm
 
 Builds `dist/` once, then times an empty Node script, `upm --version` and `upm i` in rounds,
 printing min/median/max wall time, peak RSS and CPU for each, and the median difference from
-bare Node. It needs only bash and Node, so it runs on CI images without Perl: the harness
+bare Node. A second table shows what getting a manager costs before it runs: `curl` downloads
+the published upm and pnpm 12 tarballs from registry.npmjs.org and `tar` unpacks each into an
+empty directory, timed separately.
+
+It needs only bash, Node, curl and tar, so it runs on CI images without Perl: the harness
 times spawn to reap, and a `--require` hook writes each child's `process.resourceUsage()` at
 exit. The hook costs about 1 ms per start, the same for every command. `--warm` and `--cold`
 reset the project before each install as in `ab.sh`; see the script's header for options.

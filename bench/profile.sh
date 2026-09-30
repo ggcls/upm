@@ -8,7 +8,11 @@
 #   upm --version  Node plus loading upm's CLI
 #   upm i          an install in a copy of a bench fixture, with a private store
 #
-# Needs only bash and Node, no Perl or /usr/bin/time, so it runs in bare CI images.
+# Then it times what getting a package manager costs before it can run: `curl` downloads
+# the published upm and pnpm 12 tarballs from registry.npmjs.org, and `tar` unpacks each
+# into an empty directory, with no Node involved.
+#
+# Needs only bash, Node, curl and tar, no Perl or /usr/bin/time, so it runs in bare CI images.
 # - Wall time is taken in the harness around spawn and reap, to the microsecond.
 # - Memory and CPU are the child's own getrusage (`process.resourceUsage()`), written by a
 #   `--require` hook when the process exits. It covers every thread, workers included; RSS
@@ -57,7 +61,7 @@ JS
 echo "profile: $(node --version), $RUNS runs, upm i: $(basename "$SRC") $MODE"
 DIST=$ROOT/dist RUNS=$RUNS MODE=$MODE WORK=$WORK FIXTURE=$(basename "$SRC") node --input-type=module - <<'JS'
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 
 const { DIST, RUNS, MODE, WORK, FIXTURE } = process.env;
 const env = { ...process.env, PROFILE_USAGE: `${WORK}/usage.json` };
@@ -78,18 +82,29 @@ const commands = [
   { name: `upm i (${FIXTURE}, ${MODE})`, args: [upm, "i", "--store", `${WORK}/store`], cwd: project, reset },
 ];
 
+// Milliseconds from spawn to reap. Exits the harness if the command fails.
+function timed(cmd, args, opts) {
+  const t0 = process.hrtime.bigint();
+  const r = spawnSync(cmd, args, opts);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  if (r.status !== 0) {
+    console.error(`profile: ${[cmd, ...args].join(" ")} failed (${r.status ?? r.signal})\n${r.stdout}${r.stderr}`);
+    process.exit(1);
+  }
+  return ms;
+}
+
 function run(c) {
   c.reset?.();
   rmSync(env.PROFILE_USAGE, { force: true });
-  const t0 = process.hrtime.bigint();
-  const r = spawnSync(process.execPath, ["--require", `${WORK}/hook.cjs`, ...c.args], { cwd: c.cwd, env });
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-  if (r.status !== 0) {
-    console.error(`profile: ${c.name} failed (${r.status ?? r.signal})\n${r.stdout}${r.stderr}`);
-    process.exit(1);
-  }
+  const ms = timed(process.execPath, ["--require", `${WORK}/hook.cjs`, ...c.args], { cwd: c.cwd, env });
   const u = JSON.parse(readFileSync(env.PROFILE_USAGE, "utf8"));
   return { ms, rss: u.maxRSS / 1024, cpu: (u.userCPUTime + u.systemCPUTime) / 1000 };
+}
+
+function print(table) {
+  const widths = table[0].map((_, c) => Math.max(...table.map((row) => row[c].length)));
+  for (const row of table) console.log(row.map((cell, c) => (c ? cell.padStart(widths[c]) : cell.padEnd(widths[c]))).join("  "));
 }
 
 // One untimed run each: fills the compile cache, the store and upm.lock.
@@ -110,13 +125,49 @@ const rows = samples.map((list) => {
   return { ms, med: median(ms), rss: median(rss), rssMax: rss.at(-1), cpu: median(cpu) };
 });
 const f = (v) => v.toFixed(2);
-const table = [
+print([
   ["command", "min ms", "median ms", "max ms", "+node ms", "rss MB", "max rss MB", "+node MB", "cpu ms"],
   ...rows.map((r, i) => [
     commands[i].name, f(r.ms[0]), f(r.med), f(r.ms.at(-1)), i ? f(r.med - rows[0].med) : "",
     f(r.rss), f(r.rssMax), i ? f(r.rss - rows[0].rss) : "", f(r.cpu),
   ]),
-];
-const widths = table[0].map((_, c) => Math.max(...table.map((row) => row[c].length)));
-for (const row of table) console.log(row.map((cell, c) => (c ? cell.padStart(widths[c]) : cell.padEnd(widths[c]))).join("  "));
+]);
+
+// Getting a package manager before it can run: its published tarball, fetched by curl on a new
+// connection each time and unpacked by tar into an empty directory.
+const managers = [];
+for (const [name, tag] of [["upm", "latest"], ["pnpm", "latest-12"]]) {
+  const { version, dist } = await (await fetch(`https://registry.npmjs.org/${name}/${tag}`)).json();
+  managers.push({ name: `${name}@${version}`, url: dist.tarball, files: dist.fileCount, file: `${WORK}/${name}.tgz` });
+}
+const unpackDir = `${WORK}/unpack`;
+function get(m) {
+  rmSync(m.file, { force: true });
+  rmSync(unpackDir, { recursive: true, force: true });
+  mkdirSync(unpackDir);
+  const fetchMs = timed("curl", ["-fsSL", "-o", m.file, m.url]);
+  return { fetch: fetchMs, unpack: timed("tar", ["-xzf", m.file, "-C", unpackDir]) };
+}
+// One untimed run each, so a registry CDN miss is not in the samples.
+for (const m of managers) get(m);
+const got = managers.map(() => []);
+for (let i = 0; i < Number(RUNS); i++) {
+  for (let j = 0; j < managers.length; j++) {
+    const k = (i + j) % managers.length;
+    got[k].push(get(managers[k]));
+  }
+}
+console.log();
+print([
+  ["package", "tgz KB", "files", "fetch min", "fetch median", "fetch max", "unpack min", "unpack median", "unpack max", "total median"],
+  ...got.map((list, i) => {
+    const fetchMs = sorted(list, "fetch"), unpack = sorted(list, "unpack");
+    const total = median(list.map((s) => s.fetch + s.unpack).sort((a, b) => a - b));
+    return [
+      managers[i].name, (statSync(managers[i].file).size / 1024).toFixed(0), String(managers[i].files),
+      f(fetchMs[0]), f(median(fetchMs)), f(fetchMs.at(-1)), f(unpack[0]), f(median(unpack)), f(unpack.at(-1)), f(total),
+    ];
+  }),
+]);
+console.log("times in ms");
 JS
