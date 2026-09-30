@@ -81,6 +81,7 @@ function holding(file: { path: string; mine: string }, on: boolean): void {
 
 function listen(on: boolean): void {
   const proc = globalThis.process;
+  if (typeof proc?.on !== "function") return; // no signals to end it, off Node
   for (const signal of SIGNALS) proc[on ? "on" : "off"](signal, dying);
   proc[on ? "on" : "off"]("exit", giveUp);
 }

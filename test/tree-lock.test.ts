@@ -240,6 +240,17 @@ describe("holdTree", () => {
     expect(count()).toEqual(before);
   });
 
+  it("holds and gives up the file under a `process` with no events, as the web shim's", async () => {
+    vi.stubGlobal("process", { getBuiltinModule: process.getBuiltinModule.bind(process) });
+    try {
+      const release = await holdTree(nm, () => {});
+      await release();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(await readdir(nm)).toEqual([]);
+  });
+
   it("leaves a file it no longer holds to the process that took it over", async () => {
     const release = await holdTree(nm, () => {});
     await rm(held());
