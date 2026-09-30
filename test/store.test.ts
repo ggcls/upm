@@ -503,14 +503,24 @@ describe("createStore", () => {
     ],
     [
       "a blob outside the store",
-      '{"integrity":"x","files":[{"path":"a.js","blob":"../../etc/passwd","size":5}],"unpackedSize":5}',
+      '{"integrity":"@I","files":[{"path":"a.js","blob":"../../etc/passwd","size":5}],"unpackedSize":5}',
+    ],
+    ...["../../ESCAPED.js", "/etc/passwd", "C:/x.js", "a\\..\\b.js", "a//b.js", "./a.js"].map(
+      (path) => [
+        `a file placed at ${path}`,
+        `{"integrity":"@I","files":[{"path":${JSON.stringify(path)},"blob":"ab/x","size":5}],"unpackedSize":5}`,
+      ],
+    ),
+    [
+      "another tarball's integrity",
+      `{"integrity":"${hashOf(Buffer.from("other"))}","files":[],"unpackedSize":0}`,
     ],
   ])("heals an index containing %s", async (_label, bad) => {
     const tarball = makeTarball([{ path: "a.js", data: "alpha" }]);
     const integrity = hashOf(tarball);
     const first = createStore({ dir, fetch: stubFetch(tarball) });
     const good = await first.add("https://reg/p.tgz", integrity);
-    await writeFile(await indexFile(dir), bad);
+    await writeFile(await indexFile(dir), bad.replace("@I", integrity));
 
     expect(await createStore({ dir }).index(integrity)).toBeUndefined();
 
@@ -1007,14 +1017,18 @@ describe("a store backend", () => {
     expect(flushed).toBe(2);
   });
 
-  it("does not hand the backend a package its readers would refuse", async () => {
-    const odd = makeTarball([{ path: "c:odd.js", data: "odd" }]);
+  it("hands the backend only paths its readers accept: a drive-letter file is never kept", async () => {
+    const odd = makeTarball([
+      { path: "c:odd.js", data: "odd" },
+      { path: "index.js", data: "ok" },
+    ]);
     const backend = memoryBackend();
     const failed = vi.fn();
     const store = createStore({ dir, fetch: stubFetch(odd), backend, backendFailed: failed });
-    await store.add(url, hashOf(odd));
+    const { index } = await store.add(url, hashOf(odd));
     await store.flush();
-    expect(backend.data.size).toBe(0);
+    expect(index.files.map((file) => file.path)).toEqual(["index.js"]);
+    expect([...backend.data.keys()].some((key) => key.startsWith("index/"))).toBe(true);
     expect(failed).not.toHaveBeenCalled();
   });
 

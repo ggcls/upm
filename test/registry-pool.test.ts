@@ -69,6 +69,12 @@ let auth: Map<string, string | undefined>;
 let flakyFailures: number;
 const open: RegistryPool[] = [];
 
+/** `foo`'s document under another name, every manifest renamed with it, as a registry has it. */
+function as(name: string): Packument {
+  const versions = Object.entries(foo.versions).map(([key, m]) => [key, { ...m, name }]);
+  return { ...foo, name, versions: Object.fromEntries(versions) };
+}
+
 beforeAll(async () => {
   server = createServer((request, response) => {
     const url = request.url ?? "";
@@ -78,7 +84,7 @@ beforeAll(async () => {
       response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
     const routes: Record<string, () => void> = {
       "/foo": () => send(200, foo),
-      "/foo2": () => send(200, foo),
+      "/foo2": () => send(200, as("foo2")),
       "/foo/1.0.0": () => send(200, foo.versions["1.0.0"]),
       "/foo/1.1.0": () => send(200, foo.versions["1.1.0"]),
       "/foo/9.9.9": () => send(404, { error: "not found" }),
@@ -90,14 +96,14 @@ beforeAll(async () => {
       // Changed lately, and 1.1.0 with it: its dates are in the full document alone.
       "/aged": () =>
         send(200, {
-          ...foo,
+          ...as("aged"),
           modified: new Date().toISOString(),
           ...(request.headers.accept === "application/json" && {
             time: { "1.0.0": "2020-01-01T00:00:00.000Z", "1.1.0": new Date().toISOString() },
           }),
         }),
-      "/flaky": () => (flakyFailures-- > 0 ? send(500, {}) : send(200, foo)),
-      "/slow": () => void setTimeout(() => send(200, foo), 800),
+      "/flaky": () => (flakyFailures-- > 0 ? send(500, {}) : send(200, as("flaky"))),
+      "/slow": () => void setTimeout(() => send(200, as("slow")), 800),
     };
     if (url.endsWith(".tgz")) {
       response.writeHead(200, { "content-type": "application/octet-stream" });

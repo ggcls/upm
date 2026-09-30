@@ -16,6 +16,7 @@ import type { Signal } from "./limit.ts";
 import { createWriter, SHARD_MIN, verifyTarball, wrapped } from "./unpack.ts";
 import { authFor } from "./registry.ts";
 import { concat, createHasher, iterate, sleep, toBase64 } from "./runtime.ts";
+import { sameIntegrity } from "./integrity.ts";
 import { isIndex, now, sizeOfSync, tick, trace, tracing } from "./util.ts";
 
 export { isIndex };
@@ -38,6 +39,9 @@ export interface PackageIndex {
   integrity: string;
   files: FileEntry[];
   unpackedSize: number;
+  /** What the tarball's package.json says it is, when it says. */
+  name?: string;
+  version?: string;
 }
 
 /**
@@ -261,7 +265,8 @@ export function createStore(options: StoreOptions = {}): Store {
     } catch {
       return undefined;
     }
-    return isIndex(parsed) ? parsed : undefined;
+    // One under another integrity's name is not this tarball's, however it got there.
+    return isIndex(parsed) && sameIntegrity(parsed.integrity, integrity) ? parsed : undefined;
   }
 
   /**

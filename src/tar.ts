@@ -273,6 +273,10 @@ function safePath(raw: string): string | undefined {
   const parts = normalized.split("/");
   if (parts.includes("..")) return undefined;
   const kept = parts.filter((part) => part !== "" && part !== ".");
+  // A part like `C:` is a drive, or a stream of another file, on Windows.
+  if (raw.includes(":") && kept.some((part, i) => i > 0 && /^[a-z]:/i.test(part))) {
+    return undefined;
+  }
   return kept.length > 1 ? kept.slice(1).join("/") : undefined; // strip: 1
 }
 

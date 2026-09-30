@@ -41,6 +41,9 @@ const CHUNK = 4 * 1024 * 1024;
 export interface Part {
   data: ArrayBuffer[];
   files: PartFile[];
+  /** What the tarball's package.json says it is: on the first part only, for `assemble`. */
+  name?: string;
+  version?: string;
 }
 
 export interface PartFile {
@@ -279,7 +282,7 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
     // ahead of every inflate step and stretch it, which measured slower than this on `next`.
     // One block is a small tarball, and its files go straight to the disk if allowed.
     const io = tarball.length === 1 ? direct : pooled;
-    const bins = declaredBins(found.get("package.json")?.data);
+    const { bins, name, version } = manifestOf(found.get("package.json")?.data);
     const entries: FileEntry[] = [];
     const written = new Set<string>();
     const jobs: Promise<void>[] = [];
@@ -306,7 +309,7 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
     }
     if (tracing) tick("write", now() - t);
     entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-    return { integrity, files: entries, unpackedSize };
+    return { integrity, files: entries, unpackedSize, name, version };
   }
 
   async function split(source: AsyncIterable<Uint8Array>, most: number): Promise<Part[]> {
@@ -369,7 +372,11 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
     }
     for (const { bin, file } of latest.values()) bin.files.push(file);
     const manifest = latest.get("package.json");
-    const declared = declaredBins(manifest && packed(manifest.bin, manifest.file));
+    const {
+      bins: declared,
+      name,
+      version,
+    } = manifestOf(manifest && packed(manifest.bin, manifest.file));
     // As many parts as the bytes are worth, and none too small to be worth its message: the
     // lightest bins fold into the next lightest until that holds.
     const count = Math.max(1, Math.min(most, Math.ceil(total / PART_BYTES)));
@@ -384,12 +391,13 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
     }
     const kept = new Set([...latest.values()].map(({ file }) => file.temp));
     spool?.drop((temp) => kept.has(temp)); // a later entry for the path won, as tar has it
-    return parts.map(({ data, files }) => ({
+    return parts.map(({ data, files }, i) => ({
       data,
       files: files.map(({ path, chunk, at, size, mode, temp, hash }) => {
         const exec = (mode & 0o111) !== 0 || declared.has(path);
         return { path, exec, chunk, at, size, ...(temp && { temp, blob: blobOf(hash!, exec) }) };
       }),
+      ...(i === 0 && { name, version }),
     }));
   }
 
@@ -526,7 +534,8 @@ export function assemble(integrity: string, parts: Part[], blobs: string[][]): P
     });
   });
   entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return { integrity, files: entries, unpackedSize };
+  const { name, version } = parts[0] ?? {};
+  return { integrity, files: entries, unpackedSize, name, version };
 }
 
 /** The five calls the writer makes, in the shape it makes them. `fs/promises` has them all. */
@@ -576,15 +585,26 @@ function tempToken(): string {
   return (token ||= globalThis.crypto.randomUUID().slice(0, 8));
 }
 
-/** Paths a package declares as bins. They must run, whatever mode the tarball used. */
-function declaredBins(manifest: Uint8Array | undefined): Set<string> {
-  if (!manifest) return new Set();
+/**
+ * What a tarball's package.json says: the paths it declares as bins, which must run whatever
+ * mode the tarball used, and the name and version it claims, which the index keeps.
+ */
+function manifestOf(manifest: Uint8Array | undefined): {
+  bins: Set<string>;
+  name?: string;
+  version?: string;
+} {
+  if (!manifest) return { bins: new Set() };
   try {
-    return new Set(Object.values(normalizeBin(JSON.parse(new TextDecoder().decode(manifest)))));
+    const json = JSON.parse(new TextDecoder().decode(manifest));
+    const bins = new Set(Object.values(normalizeBin(json)));
+    return { bins, name: text(json?.name), version: text(json?.version) };
   } catch {
-    return new Set(); // A package.json we cannot read simply declares no bins.
+    return { bins: new Set() }; // A package.json we cannot read declares nothing.
   }
 }
+
+const text = (value: unknown) => (typeof value === "string" ? value : undefined);
 
 // The final character also has to carry canonical padding bits: 64 bytes is 512 bits but 86
 // base64 characters hold 516, and a digest whose 4 slack bits are set decodes and re-encodes to

@@ -37,14 +37,22 @@ let base: upm.InstallOptions;
 /** Tarballs served by path besides the registry's, and each request for one. */
 let files: Record<string, Uint8Array>;
 let served: string[];
+/** Documents served by path besides `nanoid`'s. */
+let docs: Record<string, object>;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "upm-api-"));
   lines = [];
   files = {};
   served = [];
+  docs = {};
   server = createServer((request, response) => {
     const url = request.url ?? "";
+    if (Object.hasOwn(docs, url)) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(docs[url]));
+      return;
+    }
     if (Object.hasOwn(files, url)) {
       served.push(url);
       response.writeHead(200, { "content-type": "application/octet-stream" });
@@ -1095,6 +1103,147 @@ describe("tarball dependencies", () => {
     });
     await expect(upm.exec("a", { ...base, packages: [`a@${url()}`] })).rejects.toMatchObject({
       code: "EINVALIDSPEC",
+    });
+  });
+});
+
+describe("a tarball is the package it is installed as", () => {
+  /** `name@version` on the registry, its tarball's package.json saying `says`. */
+  function publish(name: string, version: string, says: object = { name, version }): string {
+    const tgz = makeTarball([
+      { path: "package.json", data: JSON.stringify(says) },
+      { path: "index.js", data: `module.exports = ${JSON.stringify(`${name}@${version}`)};\n` },
+    ]);
+    const path = `/${name}/-/${name.split("/").at(-1)}-${version}.tgz`;
+    files[path] = tgz;
+    const manifest = {
+      name,
+      version,
+      dist: { tarball: `${registry()}${path}`, integrity: hashOf(tgz) },
+    };
+    docs[`/${name.replace("/", "%2f")}`] = {
+      name,
+      "dist-tags": { latest: version },
+      versions: { [version]: manifest },
+    };
+    return hashOf(tgz);
+  }
+  const pooled = { resolvePool: 0, linkPool: { size: 1, packages: 1, files: 1000 } };
+  const code = (file: string) => readFile(join(dir, "node_modules", file, "index.js"), "utf8");
+
+  it("refuses a tarball whose package.json names another package, on and off the pool", async () => {
+    publish("pkg-a", "1.0.0", { name: "pkg-other", version: "1.0.0" });
+    await writeFile(join(dir, "package.json"), '{ "dependencies": { "pkg-a": "^1" } }');
+    await expect(upm.install(base)).rejects.toMatchObject({ code: "EMISMATCH" });
+    await expect(upm.install({ ...base, experimental: pooled })).rejects.toMatchObject({
+      code: "EMISMATCH",
+    });
+  });
+
+  it("refuses a tarball whose package.json has another version", async () => {
+    publish("pkg-a", "1.0.0", { name: "pkg-a", version: "9.9.9" });
+    await writeFile(join(dir, "package.json"), '{ "dependencies": { "pkg-a": "^1" } }');
+    await expect(upm.install(base)).rejects.toMatchObject({ code: "EMISMATCH" });
+  });
+
+  it("takes a version spelled another way, a name in another case, and an alias", async () => {
+    publish("pkg-a", "1.0.0", { name: "PKG-A", version: "v1.0.0+build.5" });
+    publish("pkg-b", "1.0.0");
+    // Old npm published loose versions, and the registry keys them as semver reads them.
+    publish("pkg-c", "1.0.2-beta", { name: "pkg-c", version: "1.0.2beta" });
+    publish("pkg-d", "0.4.1-4.1", { name: "pkg-d", version: "0.4.14.1" });
+    const deps = {
+      "pkg-a": "^1",
+      "renamed-b": "npm:pkg-b@^1",
+      "pkg-c": "1.0.2-beta",
+      "pkg-d": "0.4.1-4.1",
+    };
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: deps }));
+    await upm.install(base);
+    expect(await code("renamed-b")).toContain("pkg-b@1.0.0");
+    await rm(join(dir, "node_modules"), { recursive: true });
+    await upm.install({ ...base, frozen: true, experimental: pooled });
+    expect(await code("pkg-a")).toContain("pkg-a@1.0.0");
+  });
+
+  it("refuses a lockfile that gives a package another's tarball already in the store", async () => {
+    publish("pkg-a", "1.0.0");
+    publish("pkg-b", "1.0.0");
+    await writeFile(
+      join(dir, "package.json"),
+      '{ "dependencies": { "pkg-a": "^1", "pkg-b": "^1" } }',
+    );
+    await upm.install(base);
+    const file = join(dir, "upm.lock");
+    const lock = await readJson(file);
+    lock.packages["pkg-a@1.0.0"].integrity = lock.packages["pkg-b@1.0.0"].integrity;
+    await writeFile(file, JSON.stringify(lock, null, 2));
+    // With the tree there, and without: the store has pkg-b's tarball either way.
+    await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({
+      code: "EMISMATCH",
+    });
+    await rm(join(dir, "node_modules"), { recursive: true });
+    for (const experimental of [base.experimental, pooled]) {
+      await expect(upm.install({ ...base, frozen: true, experimental })).rejects.toMatchObject({
+        code: "EMISMATCH",
+      });
+    }
+  });
+
+  it("refuses a scoped package given the unscoped package its url ends in", async () => {
+    publish("@scope/pkg-a", "1.0.0");
+    publish("pkg-a", "1.0.0");
+    const deps = { "@scope/pkg-a": "^1", "pkg-a": "^1" };
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: deps }));
+    await upm.install(base);
+    const file = join(dir, "upm.lock");
+    const lock = await readJson(file);
+    lock.packages["@scope/pkg-a@1.0.0"].integrity = lock.packages["pkg-a@1.0.0"].integrity;
+    await writeFile(file, JSON.stringify(lock, null, 2));
+    await rm(join(dir, "node_modules"), { recursive: true });
+    for (const experimental of [base.experimental, pooled]) {
+      await expect(upm.install({ ...base, frozen: true, experimental })).rejects.toMatchObject({
+        code: "EMISMATCH",
+      });
+    }
+  });
+
+  it("refuses another package's tarball that only a store backend holds", async () => {
+    const data = new Map<string, Uint8Array>();
+    const storeBackend: upm.StoreBackend = {
+      get: async (key) => data.get(key),
+      set: async (key, value) => void data.set(key, value),
+    };
+    publish("pkg-a", "1.0.0");
+    publish("pkg-b", "1.0.0");
+    await writeFile(
+      join(dir, "package.json"),
+      '{ "dependencies": { "pkg-a": "^1", "pkg-b": "^1" } }',
+    );
+    await upm.install({ ...base, storeBackend });
+    const file = join(dir, "upm.lock");
+    const lock = await readJson(file);
+    lock.packages["pkg-a@1.0.0"].integrity = lock.packages["pkg-b@1.0.0"].integrity;
+    await writeFile(file, JSON.stringify(lock, null, 2));
+    await rm(join(dir, "node_modules"), { recursive: true });
+    const fresh = { ...base, store: join(dir, "other-store"), storeBackend, frozen: true };
+    await expect(upm.install(fresh)).rejects.toMatchObject({ code: "EMISMATCH" });
+  });
+
+  it("refuses a lockfile that points a package at another's tarball and integrity", async () => {
+    publish("pkg-a", "1.0.0");
+    publish("pkg-b", "2.0.0");
+    await writeFile(join(dir, "package.json"), '{ "dependencies": { "pkg-a": "^1" } }');
+    await upm.install(base);
+    const file = join(dir, "upm.lock");
+    const lock = await readJson(file);
+    const entry = lock.packages["pkg-a@1.0.0"];
+    entry.resolved = `${registry()}/pkg-b/-/pkg-b-2.0.0.tgz`;
+    entry.integrity = hashOf(files["/pkg-b/-/pkg-b-2.0.0.tgz"]!);
+    await writeFile(file, JSON.stringify(lock, null, 2));
+    await rm(join(dir, "node_modules"), { recursive: true });
+    await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({
+      code: "EMISMATCH",
     });
   });
 });

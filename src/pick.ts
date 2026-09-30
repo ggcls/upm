@@ -143,6 +143,24 @@ function fail(packument: Packument, spec: Spec): Error {
   return Object.assign(new Error(message), { code, wanted: spec.fetchSpec });
 }
 
+/**
+ * A manifest as filed: of the package asked for, under its own version. Another package's is
+ * the wrong document, and fails. One filed under another version's key is not that version,
+ * and reads as absent. A manifest without the field cannot say.
+ */
+export function filed(
+  m: Manifest | undefined,
+  name: string | undefined,
+  key: string,
+): Manifest | undefined {
+  if (!m) return undefined;
+  if (name && typeof m.name === "string" && m.name.toLowerCase() !== name.toLowerCase()) {
+    const message = `The registry sent ${m.name}@${m.version} for ${name}@${key}`;
+    throw Object.assign(new Error(message), { code: "EMISMATCH" });
+  }
+  return typeof m.version !== "string" || m.version === key ? m : undefined;
+}
+
 /** A JSON document never has a function in it. */
 const isView = (source: Packument | PackumentView): source is PackumentView =>
   typeof (source as PackumentView).whole === "function";
@@ -156,13 +174,14 @@ export function pickManifest(
   const defaultTag = options.defaultTag ?? "latest";
   const tagged = (name: string) => (view.tag ? view.tag(name) : view.tags()[name]);
   const fresh = (m: Manifest) => options.includeDeprecated === true || !m.deprecated;
+  const version = (key: string) => filed(view.version(key), spec.fetchName, key);
 
   // A tag or an exact version resolves to one key, or to nothing.
   if (spec.type === "tag" || spec.type === "version") {
     const wanted = spec.type === "tag" ? tagged(spec.fetchSpec) : spec.fetchSpec;
     // `=1.2.3` and `v1.2.3` are valid specs but never packument keys.
     const key = wanted === undefined ? undefined : parse(wanted)?.version;
-    const manifest = key === undefined ? undefined : view.version(key);
+    const manifest = key === undefined ? undefined : version(key);
     if (!manifest) throw fail(view.whole(), spec);
     return manifest;
   }
@@ -172,7 +191,7 @@ export function pickManifest(
   // Fast path: the default tag usually wins, and skips both parsing and sorting the list.
   const tag = tagged(defaultTag);
   if (tag !== undefined && (range === "*" || satisfies(tag, range))) {
-    const manifest = view.version(tag);
+    const manifest = version(tag);
     if (manifest && fresh(manifest) && engineOk(manifest)) return manifest;
   }
 
@@ -181,7 +200,7 @@ export function pickManifest(
   const keys = view.versions?.() ?? Object.keys(view.whole().versions ?? {});
   const read: Manifest[] = [];
   for (const [, key] of matching(keys, range).sort(([a], [b]) => compare(b, a))) {
-    const manifest = view.version(key);
+    const manifest = version(key);
     if (!manifest) continue;
     if (fresh(manifest) && engineOk(manifest)) return manifest;
     read.push(manifest);

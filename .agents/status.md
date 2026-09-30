@@ -155,6 +155,11 @@ These need a scope decision, not just a patch:
   each. One found in a later round, behind a fetched peer, settles against what is already
   fetched and can also get its own. Start at `fetchPeer` in `src/resolve.ts`.
 - An alias does not supply a peer under the package's real name.
+- A tarball is held to the name and version its package.json claims (`mismatch` in
+  `src/util.ts`). An entry whose `resolved` is another registry package's tarball at the same
+  version still passes, as an alias does: the lockfile does not say which entries are aliases,
+  so a `resolved` added by hand is for review to catch. A package.json without a name, and an
+  index or backend entry written before names were kept, cannot say, and pass.
 - `dedupe` prefers versions already locked; it is not an upgrade strategy. A fresh resolve
   requires removing the lockfile and `node_modules`, whose copy of the lockfile an install
   takes back (`upm update` is the url tarball gap above).

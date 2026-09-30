@@ -1204,10 +1204,12 @@ describe("startup budget", () => {
     // read without an async iterator, `--help` within noise; 149,999 with damaged kept
     // documents asked for again and project files written through a rename (57/52 and 136/136 ms).
     // 150,628 with each top's pins held to their ranges and a failed install's lockfile put back.
+    // 152,669 with tarballs checked against the package they are installed as, `--help` within
+    // noise (50/49 and 134/134 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(150_650);
+    expect(bytes).toBeLessThanOrEqual(152_700);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

@@ -17,7 +17,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashOf } from "./hash.ts";
 import { binOf, linkOf, readBin } from "./link.ts";
-import { linkArgs, readLink } from "../src/util.ts";
+import { linkArgs, mismatch, readLink } from "../src/util.ts";
 import { storeKeys } from "../src/keys.ts";
 import { builtin } from "../src/builtin.ts";
 import { linkTree } from "../src/link.ts";
@@ -1303,3 +1303,55 @@ async function exists(path: string): Promise<boolean> {
     () => false,
   );
 }
+
+describe("mismatch", () => {
+  const index = (name: string, version = "1.0.0") => ({
+    integrity: "",
+    files: [],
+    unpackedSize: 0,
+    name,
+    version,
+  });
+  const npm = "https://registry.npmjs.org";
+
+  it.each([
+    ["lodash", `${npm}/lodash/-/lodash-1.0.0.tgz`],
+    ["@types/node", `${npm}/@types/node/-/node-1.0.0.tgz`],
+    ["@types/node", `${npm}/@types%2fnode/-/node-1.0.0.tgz`],
+    ["@jsr/std__path", "https://npm.jsr.io/~/11/@jsr/std__path/1.0.0.tgz"],
+    ["@owner/pkg", "https://npm.pkg.github.com/download/@owner/pkg/1.0.0/5f5b4a"],
+  ])("takes %s under an alias whose url names it", (name, resolved) => {
+    expect(mismatch(index(name), { name: "alias", version: "1.0.0", resolved })).toBeUndefined();
+  });
+
+  it.each([
+    // The unscoped half of a scoped name, a segment of the registry's own path, a basename.
+    ["node", `${npm}/@types/node/-/node-1.0.0.tgz`],
+    ["npm", "https://host/api/npm/npm/x/-/x-1.0.0.tgz"],
+    ["x-1.0.0.tgz", `${npm}/x/-/x-1.0.0.tgz`],
+    ["lodash", `${npm}/lodash-es/-/lodash-es-1.0.0.tgz`],
+    ["lodash", `${npm}/lodash/2.0.0/lodash.tgz`],
+  ])("refuses %s where only part of %s names it", (name, resolved) => {
+    expect(mismatch(index(name), { name: "x", version: "1.0.0", resolved })).toMatch(/not x@/);
+  });
+
+  it("reads versions as a registry keys them, and nothing more loosely", () => {
+    const want = (version: string) => ({ name: "x", version, resolved: `${npm}/x/-/x.tgz` });
+    for (const [said, key] of [
+      ["v1.0.0+build.1", "1.0.0"],
+      ["=1.0.0", "1.0.0"],
+      ["1.0.2beta", "1.0.2-beta"],
+      ["1.0.0rc1", "1.0.0-rc1"],
+      ["0.4.14.1", "0.4.1-4.1"],
+    ]) {
+      expect(mismatch(index("x", said), want(key!))).toBeUndefined();
+    }
+    for (const [said, key] of [
+      ["1.0.1", "1.0.0"],
+      ["1.0.0-beta", "1.0.0"],
+      ["1.0.10", "1.0.1-0"],
+    ]) {
+      expect(mismatch(index("x", said), want(key!))).toBeDefined();
+    }
+  });
+});

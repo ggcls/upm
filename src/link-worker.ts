@@ -3,7 +3,8 @@
 import { builtin } from "./builtin.ts";
 import type { Shard, ShardResult } from "./link.ts";
 import type { PackageIndex } from "./store.ts";
-import { isIndex, linkArgs } from "./util.ts";
+import { sameIntegrity } from "./integrity.ts";
+import { isIndex, linkArgs, mismatch } from "./util.ts";
 
 /** An Error does not survive structured clone, so the two fields callers read travel by hand. */
 export interface ShardReply {
@@ -31,7 +32,7 @@ export function runShard(shard: Shard, linker: Linker): ShardResult {
   let { dirs, paths, blobs } = shard;
   // A small entry: the files are in the index, read here rather than sent.
   if (shard.index !== undefined) {
-    const { files } = readIndex(shard.index);
+    const { files } = readIndex(shard);
     dirs = [...dirs, ...prefixes(files).map((p) => `${shard.dir}${sep}${p}`)];
     paths = files.map((file) => file.path);
     blobs = files.map((file) => file.blob);
@@ -94,15 +95,26 @@ export function runShard(shard: Shard, linker: Linker): ShardResult {
   return { linked, copied };
 }
 
-/** The store index at `file`, as the store reads it; missing or torn is ELINK, as on the main thread. */
-function readIndex(file: string): PackageIndex {
+/**
+ * A small entry's store index, checked as the main thread checks one: missing, torn or another
+ * tarball's is ELINK, and the tarball of another package is EMISMATCH.
+ */
+function readIndex({ index: file, integrity, want }: Shard): PackageIndex {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(builtin.fs.readFileSync(file, "utf8"));
+    parsed = JSON.parse(builtin.fs.readFileSync(file!, "utf8"));
   } catch (error) {
     throw fail(`cannot read ${file}: ${reason(error)}`);
   }
-  if (!isIndex(parsed)) throw fail(`${file} is not a package index`);
+  if (
+    !isIndex(parsed) ||
+    (integrity !== undefined && !sameIntegrity(parsed.integrity, integrity))
+  ) {
+    throw fail(`${file} is not the package index it should be`);
+  }
+  const wrong = want && mismatch(parsed, want);
+  if (wrong)
+    throw fail(`${want!.name}@${want!.version} cannot be installed: ${wrong}`, "EMISMATCH");
   return parsed;
 }
 
@@ -136,6 +148,6 @@ function reason(error: unknown): string {
   return (error as Error)?.message ?? String(error);
 }
 
-function fail(message: string): Error {
-  return Object.assign(new Error(message), { code: "ELINK" });
+function fail(message: string, code = "ELINK"): Error {
+  return Object.assign(new Error(message), { code });
 }

@@ -7,7 +7,7 @@ import { digest, toBase64Url } from "./runtime.ts";
 import { authFor } from "./registry.ts";
 import type { PackageIndex, StoreOptions, Tarball } from "./store.ts";
 import type { Writer } from "./unpack.ts";
-import { sizeOfSync, trace } from "./util.ts";
+import { isSafePath, sizeOfSync, trace } from "./util.ts";
 
 /**
  * One call. It is abandoned once it makes no progress for 30 s: `signal` aborts and the store
@@ -67,6 +67,9 @@ export interface BackendIndex {
   integrity: string;
   unpackedSize: number;
   files: BackendFile[];
+  /** What the tarball's package.json says it is, when it says: see `PackageIndex`. */
+  name?: string;
+  version?: string;
 }
 
 export interface BackendClient {
@@ -177,7 +180,15 @@ export function createBackendClient(
           );
         }
         trace("backend", { i: integrity, files: files.length });
-        return { integrity, files, unpackedSize: kept.unpackedSize };
+        const { name, version } = kept;
+        return {
+          integrity,
+          files,
+          unpackedSize: kept.unpackedSize,
+          // Kept only as strings, which is all the linker compares.
+          ...(typeof name === "string" && { name }),
+          ...(typeof version === "string" && { version }),
+        };
       });
     } catch (error) {
       return failed(error);
@@ -223,9 +234,10 @@ export function createBackendClient(
       paths.set(hash, writer.blobPath(file.blob));
       return { path: file.path, hash, size: file.size, exec };
     });
-    const kept: BackendIndex = { v: 1, integrity, unpackedSize: index.unpackedSize, files };
-    // What every reader would refuse is not worth keeping: a tarball can hold a path the tar
-    // reader lets through and `checked` does not, such as `c:name`.
+    const { name, version, unpackedSize } = index;
+    const kept: BackendIndex = { v: 1, integrity, unpackedSize, files, name, version };
+    // What every reader would refuse is not worth keeping. The tar reader passes no path that
+    // `checked` refuses, so this guards the index's other fields as much as its paths.
     try {
       checked(kept, integrity);
     } catch {
@@ -297,13 +309,6 @@ function checked(kept: BackendIndex, integrity: string): PackageIndex["files"] {
     if (typeof exec !== "boolean") throw bad(`bad mode for ${path}`);
     return { path, blob: storeBlob(hash, exec), size };
   });
-}
-
-/** What the tar reader lets through: relative, `/`-separated, no `.`, `..` or empty part. */
-function isSafePath(path: unknown): path is string {
-  if (typeof path !== "string" || path === "" || path.includes("\\")) return false;
-  if (path.startsWith("/") || /^[a-z]:/i.test(path)) return false;
-  return path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 
 /** Files in windows of at most `WINDOW` bytes, each holding at least one. */

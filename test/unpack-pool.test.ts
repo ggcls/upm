@@ -380,6 +380,8 @@ describe("createPool with a big tarball", { timeout }, () => {
     const worked = await worker(four, tarball.slice());
 
     expect(worked).toEqual(alone);
+    // What the package.json says rides on one part and comes back in the index.
+    expect(worked).toMatchObject({ name: "shard", version: "1.0.0" });
     expect(await contents(join(dir, "pooled"))).toEqual(await contents(join(dir, "alone")));
     expect(worked.files.find((file) => file.path === "cli.js")?.blob).toMatch(/-exec$/);
     expect(worked.files.find((file) => file.path === "run.sh")?.blob).toMatch(/-exec$/);
@@ -471,6 +473,7 @@ describe("createPool with a big tarball", { timeout }, () => {
 
     expect(streamed).toBe(true);
     expect(index).toEqual(alone);
+    expect(index).toMatchObject({ name: "stream", version: "1.0.0" });
     expect(hits).toHaveLength(1);
     expect(await createStore({ dir }).index(hashOf(tarball))).toEqual(index);
     for (const file of index.files) {
@@ -840,7 +843,10 @@ function hugeTarball(seed: string): Uint8Array {
   for (let i = 0; i < 900; i++)
     entries.push({ path: `lib/${i}.bin`, data: randomBytes(20 * 1024) });
   entries.push({ path: "lib/twice.js", data: "first" });
-  entries.push({ path: "package.json", data: `{"name":"${seed}","bin":{"x":"cli.js"}}` });
+  entries.push({
+    path: "package.json",
+    data: `{"name":"${seed}","version":"1.0.0","bin":{"x":"cli.js"}}`,
+  });
   entries.push({ path: "cli.js", data: "#!/usr/bin/env node" });
   entries.push({ path: "run.sh", data: "#!/bin/sh", mode: 0o755 });
   entries.push({ path: "lib/twice.js", data: "second wins" });

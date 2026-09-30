@@ -143,6 +143,19 @@ describe("extractTar", () => {
     expect(paths(entries)).toEqual(["good.js"]);
   });
 
+  it("rejects a drive letter anywhere past the first component, and keeps other colons", async () => {
+    const entries = await collect(
+      tar([
+        { name: "package/C:/windows/x", body: "bad" },
+        { name: "package/c:x.js", body: "bad" },
+        { name: "package/lib/D:y.js", body: "bad" },
+        { name: "package/lib/a:b.js", body: "bad" }, // one letter and a colon reads as a drive
+        { name: "package/lib/ab:c.js", body: "ok" },
+      ]),
+    );
+    expect(paths(entries)).toEqual(["lib/ab:c.js"]);
+  });
+
   it("normalizes backslash separators", async () => {
     const entries = await collect(
       tar([

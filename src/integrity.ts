@@ -33,6 +33,17 @@ export function parseIntegrity(value: string): Parsed {
   return best;
 }
 
+/** Two spellings of one integrity: the strongest hash each names is the same. */
+export function sameIntegrity(a: string, b: string): boolean {
+  if (a === b) return true;
+  try {
+    const [x, y] = [parseIntegrity(a), parseIntegrity(b)];
+    return x.algorithm === y.algorithm && x.digest === y.digest;
+  } catch {
+    return false;
+  }
+}
+
 /** Convert a legacy hex `dist.shasum` into `sha1-<base64>`. */
 export function fromShasum(shasum: string): string {
   if (typeof shasum !== "string" || !/^[\da-f]{40}$/i.test(shasum.trim())) {

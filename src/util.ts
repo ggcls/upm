@@ -10,10 +10,13 @@ export function isIndex(value: unknown): value is PackageIndex {
     typeof index === "object" &&
     index !== null &&
     typeof index.integrity === "string" &&
+    (index.name === undefined || typeof index.name === "string") &&
+    (index.version === undefined || typeof index.version === "string") &&
     Array.isArray(index.files) &&
     index.files.every(
       (file) =>
-        typeof file?.path === "string" &&
+        // A hand-edited index must not be able to place a file outside its package.
+        isSafePath(file?.path) &&
         typeof file?.blob === "string" &&
         // A blob is base64url and a suffix, so `..` is never in one: a hand-edited index must
         // not be able to link content from outside `files/`.
@@ -21,6 +24,71 @@ export function isIndex(value: unknown): value is PackageIndex {
         typeof file?.size === "number",
     )
   );
+}
+
+// A `\`, a drive letter, a leading or doubled `/`, or a `.` or `..` part.
+const UNSAFE_PATH = /\\|^[a-z]:|(?:^|\/)\.{0,2}(?:\/|$)/i;
+
+/** What the tar reader lets through: relative, `/`-separated, no `.`, `..` or empty part. */
+export function isSafePath(path: unknown): path is string {
+  return typeof path === "string" && !UNSAFE_PATH.test(path);
+}
+
+/** A registry package as the tree names it: `resolved` is where its tarball is. */
+export interface Identity {
+  name: string;
+  version: string;
+  resolved: string;
+}
+
+/**
+ * Why an index is not the package it would be linked as, or nothing. The store is keyed by
+ * integrity alone, so this is what stops a lockfile giving one package another's tarball. An
+ * index from before names were kept, or a tarball whose package.json has none, cannot say.
+ */
+export function mismatch(index: PackageIndex, want: Identity): string | undefined {
+  const { name, version } = index;
+  const named =
+    name === undefined ||
+    name.toLowerCase() === want.name.toLowerCase() ||
+    aliased(want.resolved, name, want.version);
+  const versioned = version === undefined || plain(version) === plain(want.version);
+  if (named && versioned) return undefined;
+  return `its tarball is ${name ?? want.name}@${version ?? want.version}, not ${want.name}@${want.version}`;
+}
+
+/**
+ * An alias installs a package under another name; only its tarball's url still names it: as
+ * whole segments followed by `-` (`/<name>/-/`) or by the version (`/<name>/1.0.0.tgz`), and
+ * never as the unscoped half of `/@scope/<name>/-/`.
+ */
+function aliased(resolved: string, name: string, version: string): boolean {
+  let url = resolved;
+  try {
+    url = decodeURIComponent(resolved);
+  } catch {}
+  const parts = url.toLowerCase().split("/");
+  const own = name.toLowerCase().split("/");
+  const v = version.toLowerCase();
+  return parts.some((_, i) => {
+    const next = parts[i + own.length];
+    return (
+      !parts[i - 1]?.startsWith("@") &&
+      own.every((part, j) => parts[i + j] === part) &&
+      (next === "-" || next === v || next === `${v}.tgz`)
+    );
+  });
+}
+
+/**
+ * A version as a registry keys it: `v1.2.3+build` is `1.2.3`, and a loose one old npm
+ * published, `1.2.3beta`, is `1.2.3-beta`.
+ */
+function plain(version: string): string {
+  const m = /^[=v\s]*0*(\d+)\.0*(\d+)\.0*(\d+)(?:-?([\da-z-]+(?:\.[\da-z-]+)*))?(?:\+.*)?$/i.exec(
+    version.trim(),
+  );
+  return m ? `${m[1]}.${m[2]}.${m[3]}${m[4] ? `-${m[4]}` : ""}` : version.trim();
 }
 
 /** A missing directory reads as empty: callers here are sweeping, not asserting. */

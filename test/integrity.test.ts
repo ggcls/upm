@@ -1,7 +1,13 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createVerifier, fromShasum, hashOf, parseIntegrity } from "../src/integrity.ts";
+import {
+  createVerifier,
+  fromShasum,
+  hashOf,
+  parseIntegrity,
+  sameIntegrity,
+} from "../src/integrity.ts";
 
 const data = Buffer.from("upm");
 const digest = (algorithm: string) => createHash(algorithm).update(data).digest("base64");
@@ -47,6 +53,18 @@ describe("parseIntegrity", () => {
   it("normalizes the digest so padding does not matter", () => {
     const unpadded = sha512.replace(/=+$/, "");
     expect(parseIntegrity(unpadded).digest).toBe(digest("sha512"));
+  });
+});
+
+describe("sameIntegrity", () => {
+  it("compares the strongest hash, however the string is spelled", () => {
+    expect(sameIntegrity(sha512, sha512)).toBe(true);
+    expect(sameIntegrity(`${sha1} ${sha512}`, `  ${sha512}?x=1`)).toBe(true);
+    expect(sameIntegrity(sha512, sha1)).toBe(false);
+    expect(
+      sameIntegrity(sha512, `sha512-${createHash("sha512").update("x").digest("base64")}`),
+    ).toBe(false);
+    expect(sameIntegrity(sha512, "garbage")).toBe(false);
   });
 });
 

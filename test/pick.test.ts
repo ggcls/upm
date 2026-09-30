@@ -112,6 +112,26 @@ describe("exact versions", () => {
   });
 });
 
+describe("a manifest as filed", () => {
+  it("reads a version filed under another version's key as absent", () => {
+    const doc = pkg({ "1.0.0": {}, "1.1.0": { version: "2.0.0" } }, { latest: "1.1.0" });
+    expect(pick(doc, "foo@^1").version).toBe("1.0.0");
+    expect(() => pick(doc, "foo@latest")).toThrow(/No matching version/);
+    expect(() => pick(doc, "foo@1.1.0")).toThrow(/No matching version/);
+    expect(() => pick(doc, "foo@2.0.0")).toThrow(/No matching version/);
+  });
+
+  it("fails on another package's manifest, and takes one in another case", () => {
+    const other = pkg({ "1.0.0": { name: "bar" } }, { latest: "1.0.0" });
+    expect(() => pick(other, "foo@^1")).toThrowError(
+      expect.objectContaining({ code: "EMISMATCH" }),
+    );
+    expect(pick(pkg({ "1.0.0": { name: "FOO" } }), "foo@1.0.0").version).toBe("1.0.0");
+    // An alias asks under the name it fetches.
+    expect(pick(pkg({ "1.0.0": {} }), "bar@npm:foo@^1").version).toBe("1.0.0");
+  });
+});
+
 describe("ranges", () => {
   const doc = pkg({ "1.0.0": {}, "1.2.0": {}, "1.9.1": {}, "2.0.0": {} }, { latest: "2.0.0" });
 

@@ -490,6 +490,13 @@ describe("pinned", () => {
     expect(s.calls[0]?.accept).toBe(CORGI);
   });
 
+  it("finds no version in a manifest the route files under another version", async () => {
+    const s = stub((call) => (route(call) ? json(two) : json(fat)));
+    const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch });
+
+    expect(await registry.pinned("foo", "1.0.0")).toBeUndefined();
+  });
+
   it("asks an unscoped name's per-version route, not the packument", async () => {
     const s = stub((call) => (route(call) ? json(one) : json(fat)));
     const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch });

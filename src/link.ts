@@ -4,7 +4,18 @@ import type { Progress } from "./api.ts";
 import { builtin } from "./builtin.ts";
 import { storeKeys } from "./keys.ts";
 import { createLimiter } from "./limit.ts";
-import { alive, exists, linkArgs, list, trace, readLink, readLinkSync, sizeOf } from "./util.ts";
+import {
+  alive,
+  exists,
+  linkArgs,
+  list,
+  mismatch,
+  trace,
+  readLink,
+  readLinkSync,
+  sizeOf,
+} from "./util.ts";
+import type { Identity } from "./util.ts";
 import { allDeps } from "./resolve.ts";
 import { pid } from "./runtime.ts";
 import type { ResolvedPackage, Resolution } from "./resolve.ts";
@@ -81,7 +92,10 @@ export interface Shard {
   symlinks: string[];
   /** `at, text` pairs, flat: Windows bins are shims. */
   shims?: string[];
+  /** A small entry's index, read by the worker, and what it must be the index of. */
   index?: string;
+  integrity?: string;
+  want?: Identity;
 }
 
 export interface ShardResult {
@@ -275,6 +289,9 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
         // A torn index reads as absent: the store lost it, and the caller fills again.
         const found = store.index(pkg.integrity);
         if (!found) throw fail(`${id} is not in the store at ${store.dir}`, "ELINK");
+        // A tarball dependency's package.json says what it is; nothing else could.
+        const wrong = pkg.source === undefined ? mismatch(found, pkg) : undefined;
+        if (wrong) throw fail(`${id} cannot be installed: ${wrong}`, "EMISMATCH");
         return found;
       },
     });
@@ -645,6 +662,10 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
         symlinks,
         shims: texts,
         index: store.indexPath(pkg.integrity),
+        integrity: pkg.integrity,
+        ...(pkg.source === undefined && {
+          want: { name: pkg.name, version: pkg.version, resolved: pkg.resolved },
+        }),
       };
       return [[whole], binCount];
     }

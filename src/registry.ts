@@ -1,7 +1,7 @@
 // Read-only npm registry client: packuments and single manifests, memoized per request.
 import { cacheLookups, fetching } from "./dns.ts";
 import { createAdaptiveLimiter, isThrottle, retryAfter } from "./limit.ts";
-import { pickManifest, viewAsOf } from "./pick.ts";
+import { filed, pickManifest, viewAsOf } from "./pick.ts";
 import type { PackumentView, PickOptions } from "./pick.ts";
 import { indexVersions, OPEN, parseSlice, pluckModified, pluckTags, pluckTimes } from "./pluck.ts";
 import type { VersionIndex } from "./pluck.ts";
@@ -495,6 +495,11 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     return await loadedVersion(name, version);
   }
 
+  /** `loadPinned`, held to what a pick holds a manifest to: see `filed`. */
+  async function loadFiled(name: string, version: string): Promise<Manifest | undefined> {
+    return filed(await loadPinned(name, version), undefined, version);
+  }
+
   /** The version out of a peeked document, or off an early route when that answers first. */
   function raced(
     name: string,
@@ -600,7 +605,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
 
   async function pick(spec: Spec, pinned?: string, options?: PickOptions): Promise<Manifest> {
     const name = spec.fetchName;
-    const found = pinned === undefined ? undefined : await loadPinned(name, pinned);
+    const found = pinned === undefined ? undefined : await loadFiled(name, pinned);
     if (found) return found;
     // A tag written out, `foo@latest`, is what it points at now, as npm reads it: revalidated.
     if (spec.type === "tag" && cache?.mode === "revalidate") recheck(name);
@@ -652,7 +657,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     view: (name) => again(name, () => view(name)),
     packument: (name) => again(name, async () => (await view(name)).whole()),
     manifest: (name, version) => again(name, () => loadManifest(name, version)),
-    pinned: (name, version) => again(name, () => loadPinned(name, version)),
+    pinned: (name, version) => again(name, () => loadFiled(name, version)),
     pick: (spec, pinned, options) => again(spec.fetchName, () => pick(spec, pinned, options)),
   };
 }

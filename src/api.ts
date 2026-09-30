@@ -126,6 +126,11 @@ export type ErrorCode =
   | "EBADPLATFORM"
   /** A tarball does not match its integrity, or a manifest has none. */
   | "EINTEGRITY"
+  /**
+   * A tarball, or a registry manifest, is of another package or version than the one it is
+   * installed as: a lockfile naming another package's integrity, say.
+   */
+  | "EMISMATCH"
   /** The registry answered with an error, or could not be reached in time. */
   | "EREGISTRY"
   | "ENETWORK"

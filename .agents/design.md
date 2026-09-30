@@ -121,6 +121,11 @@ before that, bytes may exist only in a private temp file (`files/<pid>-*.tmp`, m
 0600, no blob name), removed when the tarball fails and swept by `prune` once its
 process is dead and the grace period is over.
 
+The store is keyed by integrity alone, so integrity proves bytes, not which package they
+are. An index keeps the name and version its tarball's package.json claims, and a registry
+package is linked only when they are its own; an alias passes on the name its tarball url
+names. Without that, a lockfile could give one package another's tarball.
+
 A store backend (`src/store-backend.ts`) is the one exception, and it is trusted as the store
 is: without the tarball nothing can check a package's file list against its integrity, so
 whoever can write to the backend decides what a package holds. A blob is still checked against
