@@ -456,6 +456,11 @@ const sync = {
     }
     remove(found.parent, found.name);
   },
+  unlinkSync(p: string): void {
+    const found = existing(p, false, "unlink");
+    if (found.node.kind === "dir") throw fail("EISDIR", "unlink", p);
+    remove(found.parent, found.name);
+  },
   rmdirSync(p: string): void {
     const found = existing(p, false, "rmdir");
     if (found.node.kind !== "dir") throw fail("ENOTDIR", "rmdir", p);
