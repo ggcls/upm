@@ -1449,6 +1449,39 @@ describe("workspaces", () => {
       ).toBe(false);
     });
 
+    it("sees a pin its unchanged range does not allow, as `pickManifest` reads the range", () => {
+      const pinned = (specs: Record<string, Record<string, string>>, version: string) => {
+        const lock = toLockfile(tree());
+        lock.root.specs = specs;
+        lock.root.dependencies = { ...lock.root.dependencies, nanoid: version };
+        return sameTree(lock, { ...manifest, ...specs }, found());
+      };
+      const deps = (spec: string) => ({ dependencies: { a: "^1", nanoid: spec } });
+      expect(pinned(deps("^5"), "5.1.0")).toBe(true);
+      expect(pinned(deps("^5"), "6.0.0")).toBe(false);
+      expect(pinned(deps("^5"), "5.1.0-beta.1")).toBe(false);
+      expect(pinned(deps("5.0.0"), "5.0.1")).toBe(false);
+      expect(pinned(deps("=5.0.0"), "5.0.0")).toBe(true);
+      // `*` takes the default tag, prerelease or not; a tag names no range to hold it to.
+      expect(pinned(deps("*"), "6.0.0-beta.1")).toBe(true);
+      expect(pinned(deps("latest"), "0.0.1")).toBe(true);
+      // An alias pins the aliased package's version.
+      expect(pinned(deps("npm:other@^5"), "5.2.0")).toBe(true);
+      expect(pinned(deps("npm:other@^5"), "4.0.0")).toBe(false);
+      // A name in several groups is held to the range the resolver walks: optional, then prod.
+      const both = { dependencies: { a: "^1", nanoid: "^5" }, devDependencies: { nanoid: "^4" } };
+      expect(pinned(both, "5.0.0")).toBe(true);
+      expect(pinned(both, "4.0.0")).toBe(false);
+      const optional = { ...both, optionalDependencies: { nanoid: "^4" } };
+      expect(pinned(optional, "4.0.0")).toBe(true);
+      // A workspace's own pins, and one its tarball or link edge has nothing to say about.
+      const lock = toLockfile(tree());
+      lock.workspaces!["packages/a"]!.dependencies!.nanoid = "4.0.0";
+      expect(sameTree(lock, manifest, found())).toBe(false);
+      lock.workspaces!["packages/a"]!.dependencies!.nanoid = "https://x/nanoid.tgz";
+      expect(sameTree(lock, manifest, found())).toBe(true);
+    });
+
     it("sees a workspace's ranges or peers move", () => {
       const lock = toLockfile(tree());
       const edited = found();

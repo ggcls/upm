@@ -1,5 +1,6 @@
 // The commands as functions, against a local registry: every CLI command has one.
 import { Buffer } from "node:buffer";
+import { writeFileSync } from "node:fs";
 import {
   chmod,
   lstat,
@@ -442,6 +443,77 @@ describe("api", () => {
     await expect(upm.install(fresh)).rejects.toMatchObject({ code: "EOFFLINE" });
     // Online, the same store is filled.
     expect(await upm.install({ ...fresh, offline: false })).toMatchObject({ packages: 1 });
+  });
+
+  /** A packument served beside nanoid's, for each version the tarball its integrity names. */
+  const serve = (name: string, versions: Record<string, Uint8Array>, integrity = hashOf) => {
+    const manifests = Object.fromEntries(
+      Object.entries(versions).map(([version, data]) => {
+        const path = `/${name}/-/${name}-${version}.tgz`;
+        files[path] = data;
+        const dist = { tarball: `${registry()}${path}`, integrity: integrity(data) };
+        return [version, { name, version, dist }];
+      }),
+    );
+    const latest = Object.keys(versions).at(-1)!;
+    const packument = { name, "dist-tags": { latest }, versions: manifests };
+    files[`/${name}`] = Buffer.from(JSON.stringify(packument));
+  };
+
+  it("resolves again from a lockfile that pins a version its range does not allow", async () => {
+    const four = makeTarball([{ path: "index.js", data: 'module.exports = "nanoid 4";\n' }]);
+    serve("nanoid", { "4.0.0": four, "5.0.0": tarball });
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^4" } }));
+    await upm.install(base);
+    // As a hand edit or a bad merge leaves it: a whole, valid lockfile, 5.0.0 under `^4`.
+    const lockFile = join(dir, "upm.lock");
+    const edited = await readJson(lockFile);
+    edited.root.dependencies.nanoid = "5.0.0";
+    edited.packages = { "nanoid@5.0.0": { integrity: hashOf(tarball) } };
+    await writeFile(lockFile, JSON.stringify(edited, undefined, 2));
+    await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({ code: "ELOCK" });
+    await rm(join(dir, "node_modules"), { recursive: true });
+    await upm.install(base);
+    expect((await readJson(lockFile)).root.dependencies).toEqual({ nanoid: "4.0.0" });
+    const installed = join(dir, "node_modules", "nanoid", "index.js");
+    expect(await readFile(installed, "utf8")).toContain("nanoid 4");
+  });
+
+  it("keeps no lockfile from an install whose tarball failed its integrity", async () => {
+    const other = makeTarball([{ path: "index.js", data: "other\n" }]);
+    serve("bad", { "1.0.0": tarball }, () => hashOf(other));
+    const lockFile = join(dir, "upm.lock");
+    const manifest = (dependencies: Record<string, string>) =>
+      writeFile(join(dir, "package.json"), JSON.stringify({ dependencies }));
+    await manifest({ bad: "^1" });
+    await expect(upm.install(base)).rejects.toMatchObject({ code: "EINTEGRITY" });
+    await expect(stat(lockFile)).rejects.toMatchObject({ code: "ENOENT" });
+
+    // Over a lockfile, the one before stays, byte for byte, whichever command resolved.
+    await manifest({ nanoid: "^5" });
+    await upm.install(base);
+    const before = await readFile(lockFile, "utf8");
+    await manifest({ nanoid: "^5", bad: "^1" });
+    await expect(upm.install(base)).rejects.toMatchObject({ code: "EINTEGRITY" });
+    expect(await readFile(lockFile, "utf8")).toBe(before);
+    await manifest({ nanoid: "^5" });
+    await expect(upm.add(["bad"], base)).rejects.toMatchObject({ code: "EINTEGRITY" });
+    expect(await readFile(lockFile, "utf8")).toBe(before);
+    // Put right, the next install goes on from it.
+    await manifest({ nanoid: "^5" });
+    expect(await upm.install({ ...base, frozen: true })).toMatchObject({ packages: 1 });
+
+    // A lockfile another install wrote meanwhile is that install's: it stays.
+    await manifest({ nanoid: "^5", bad: "^1" });
+    const theirs = `${before}\n`;
+    const log = (message: string) => {
+      if (message.startsWith("wrote upm.lock")) writeFileSync(lockFile, theirs);
+    };
+    await expect(upm.install({ ...base, log })).rejects.toMatchObject({ code: "EINTEGRITY" });
+    expect(await readFile(lockFile, "utf8")).toBe(theirs);
+    await rm(lockFile);
+    await expect(upm.install({ ...base, log })).rejects.toMatchObject({ code: "EINTEGRITY" });
+    expect(await readFile(lockFile, "utf8")).toBe(theirs);
   });
 
   it("fails a frozen install without a lockfile", async () => {

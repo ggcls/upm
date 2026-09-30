@@ -5,8 +5,8 @@ import { normalizeBin } from "./normalize-bin.ts";
 import { registryBase, tarballUrl } from "./registry.ts";
 import type { BaseFor } from "./registry.ts";
 import { pid } from "./runtime.ts";
-import { parse } from "./semver.ts";
-import { declaredSpecs, declaredWorkspaces, localPath, localShape } from "./resolve.ts";
+import { parse, satisfies } from "./semver.ts";
+import { declaredSpecs, declaredWorkspaces, localPath, localShape, rootEdges } from "./resolve.ts";
 import type { PeerKind, Resolution, ResolvedPackage, RootManifest, RootSpecs } from "./resolve.ts";
 import { parseDep } from "./spec.ts";
 import type { Spec } from "./spec.ts";
@@ -205,8 +205,9 @@ export function formatLockfile(lock: Lockfile): string {
 /**
  * Whether the lockfile was made from this tree: the same workspace patterns, the same
  * workspaces at the same paths, names and versions, and in the root and in every workspace
- * the same declared ranges — plus, in a workspace, the same bins and peers, which its entry
- * carries too. Anything else means a resolve; nothing here needs the network.
+ * the same declared ranges, each pinned to a version it allows — plus, in a workspace, the
+ * same bins and peers, which its entry carries too. Anything else means a resolve; nothing
+ * here needs the network.
  */
 export function sameTree(
   lock: Lockfile,
@@ -216,6 +217,7 @@ export function sameTree(
   const patterns = JSON.stringify(declaredWorkspaces(manifest) ?? []);
   if (patterns !== JSON.stringify(lock.root.workspaces ?? [])) return false;
   if (!sameSpecs(declaredSpecs(manifest), lock.root.specs)) return false;
+  if (!pinsFit(lock.root.specs, lock.root.dependencies)) return false;
   const locked = lock.workspaces ?? {};
   if (Object.keys(locked).length !== workspaces.length) return false;
   return workspaces.every((ws) => {
@@ -223,10 +225,34 @@ export function sameTree(
     if (!entry || entry.name !== ws.name || entry.version !== ws.version) return false;
     const shape = localShape(ws.manifest);
     if (!sameSpecs(shape.specs, entry.specs)) return false;
+    const edges = { ...entry.optionalDependencies, ...entry.dependencies };
+    if (!pinsFit(entry.specs, edges)) return false;
     return (["bin", "peerDependencies", "peers"] as const).every(
       (field) =>
         JSON.stringify(sorted(shape[field]) ?? {}) === JSON.stringify(sorted(entry[field]) ?? {}),
     );
+  });
+}
+
+/**
+ * Whether each version a top pins is one its declared range could have picked. A lock edited
+ * by hand, or merged badly, can pin anything under an unchanged range. A name in several
+ * groups is held to the range the resolver walks; a tag, a workspace or a tarball has nothing
+ * to compare.
+ */
+function pinsFit(specs: RootSpecs = {}, edges: Record<string, string> = {}): boolean {
+  return rootEdges(specs).every(([name, raw]) => {
+    const pinned = Object.hasOwn(edges, name) ? edges[name]! : "";
+    if (!parse(pinned)) return true;
+    let spec: Spec;
+    try {
+      spec = parseDep(name, raw);
+    } catch {
+      return true; // the resolve says what is wrong with it
+    }
+    // As `pickManifest` picks: an exact version is one key, and `*` takes any tagged version.
+    if (spec.type === "version") return parse(spec.fetchSpec)?.version === pinned;
+    return spec.type !== "range" || spec.fetchSpec === "*" || satisfies(pinned, spec.fetchSpec);
   });
 }
 

@@ -425,6 +425,8 @@ interface Context {
   source?: LockSource;
   /** The lockfile `restoreLock` read and wrote back, so `plan` need not read it again. */
   restored?: Lockfile;
+  /** What `upm.lock` held before this install resolved and wrote `wrote` over it, if anything. */
+  replaced?: { dir: string; text?: string; wrote: string };
   /** Keys of packages whose bins another manager's lockfile left out. */
   binless?: string[];
   /** Another manager's lockfile as read, stamped first: a rewrite after is a new install's. */
@@ -511,7 +513,22 @@ export async function dedupe(options: DedupeOptions = {}): Promise<InstallResult
 }
 
 async function installTree(ctx: Context, edit?: Edit, loaded?: Project): Promise<InstallResult> {
-  return await installed(ctx, edit, loaded).finally(() => closeEarly(ctx));
+  return await installed(ctx, edit, loaded)
+    .catch(async (error: unknown) => {
+      // The lockfile this install resolved goes: its integrities came from metadata, and no
+      // tarball proved them. What was there before comes back, unless another install has
+      // written since.
+      const { replaced } = ctx;
+      if (replaced && (await lockText(ctx, replaced.dir)) === replaced.wrote) {
+        const { dir, text } = replaced;
+        const file = builtin.path.join(dir, LOCKFILE);
+        await (text === undefined ? builtin.fsp.rm(file) : writeLockfile(dir, text)).catch(
+          () => {},
+        );
+      }
+      throw error;
+    })
+    .finally(() => closeEarly(ctx));
 }
 
 async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<InstallResult> {
@@ -1474,7 +1491,8 @@ async function resolveLock(
   }
   for (const warning of resolution.warnings) log(warning, "warn");
   const lock = toLockfile(resolution, registry.baseFor);
-  if (existing && formatLockfile(lock) === formatLockfile(existing)) {
+  const wrote = formatLockfile(lock);
+  if (existing && wrote === formatLockfile(existing)) {
     if (dedupe) log("nothing to dedupe", "info");
     return existing;
   }
@@ -1482,7 +1500,8 @@ async function resolveLock(
     const dropped = Object.keys(locked.packages).length - Object.keys(lock.packages).length;
     if (dropped > 0) log(`dropped ${dropped} packages`, "info");
   }
-  await writeLock(dir, lock);
+  ctx.replaced = { dir, text: await lockText(ctx, dir), wrote };
+  await writeLock(dir, wrote);
   log(`wrote ${LOCKFILE} · ${counts(lock)}`, "info");
   return lock;
 }

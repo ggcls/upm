@@ -946,7 +946,7 @@ function declaredPeers(m: RootManifest): Record<string, PeerKind> {
 }
 
 /** Direct edges of the root as `[name, range, optional]`. A name in both groups is optional. */
-function rootEdges(manifest: RootManifest): [string, string, boolean][] {
+export function rootEdges(manifest: RootManifest): [string, string, boolean][] {
   const optional = manifest.optionalDependencies ?? {};
   const seen = new Set(Object.keys(optional));
   const out: [string, string, boolean][] = Object.entries(optional).map(([n, r]) => [n, r, true]);

@@ -1203,10 +1203,11 @@ describe("startup budget", () => {
     // 149,206 with `.upm/node_modules` (42/43 and 111/112 ms); 149,433 with Safari's streams
     // read without an async iterator, `--help` within noise; 149,999 with damaged kept
     // documents asked for again and project files written through a rename (57/52 and 136/136 ms).
+    // 150,628 with each top's pins held to their ranges and a failed install's lockfile put back.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(150_020);
+    expect(bytes).toBeLessThanOrEqual(150_650);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
