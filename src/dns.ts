@@ -102,7 +102,7 @@ export function fetching(): typeof fetch {
 export interface Answer {
   status: number;
   headers: { get(name: string): string | null };
-  body: AsyncIterable<Uint8Array> | null;
+  body: AsyncIterable<Uint8Array> | ReadableStream<Uint8Array> | null;
 }
 
 /** A GET of a url with these headers, aborted by the signal. */

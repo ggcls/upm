@@ -120,6 +120,20 @@ export async function shortHash(text: string): Promise<string> {
   return toBase64Url(bytes.subarray(0, 16));
 }
 
+/** A web stream to loop over. Safari's have no `Symbol.asyncIterator`. */
+export const iterate = <T>(stream: AsyncIterable<T> | ReadableStream<T>): AsyncIterable<T> =>
+  Symbol.asyncIterator in stream ? (stream as AsyncIterable<T>) : read(stream);
+
+async function* read<T>(stream: ReadableStream<T>): AsyncGenerator<T> {
+  const reader = stream.getReader();
+  try {
+    for (let step; !(step = await reader.read()).done;) yield step.value;
+  } finally {
+    // A loop left early cancels, as the native iterator does. After the end it is a no-op.
+    reader.cancel().catch(() => {});
+  }
+}
+
 /** This process, for temp names. Off Node there is one, so 0; the random token keeps names apart. */
 export const pid = globalThis.process?.pid ?? 0;
 

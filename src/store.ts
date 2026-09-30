@@ -15,7 +15,7 @@ import {
 import type { Signal } from "./limit.ts";
 import { createWriter, SHARD_MIN, verifyTarball, wrapped } from "./unpack.ts";
 import { authFor } from "./registry.ts";
-import { concat, createHasher, sleep, toBase64 } from "./runtime.ts";
+import { concat, createHasher, iterate, sleep, toBase64 } from "./runtime.ts";
 import { isIndex, now, sizeOfSync, tick, trace, tracing } from "./util.ts";
 
 export { isIndex };
@@ -522,7 +522,7 @@ export function createStore(options: StoreOptions = {}): Store {
     let waiting = 0;
     const landed = (block: Uint8Array) => (sink ? sink.push(block) : bytes.push(block));
     try {
-      for await (const chunk of body) {
+      for await (const chunk of iterate(body)) {
         alive();
         if (tracing && got === 0) trace("first", { i: tarball });
         got += chunk.byteLength;

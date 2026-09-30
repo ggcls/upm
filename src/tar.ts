@@ -1,6 +1,6 @@
 // Minimal ustar/pax tar reader for npm tarballs: regular files only, hardened paths.
 import { builtin } from "./builtin.ts";
-import { concat, hasZlib } from "./runtime.ts";
+import { concat, hasZlib, iterate } from "./runtime.ts";
 import { now, tick, tracing } from "./util.ts";
 
 export interface TarEntry {
@@ -258,8 +258,10 @@ function inflateWeb(source: AsyncIterator<Uint8Array>): AsyncIterable<Uint8Array
       else controller.enqueue(step.value);
     },
   });
-  return stream.pipeThrough(
-    new DecompressionStream("gzip") as ReadableWritablePair<Uint8Array, Uint8Array>,
+  return iterate(
+    stream.pipeThrough(
+      new DecompressionStream("gzip") as ReadableWritablePair<Uint8Array, Uint8Array>,
+    ),
   );
 }
 

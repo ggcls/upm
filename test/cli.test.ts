@@ -1200,11 +1200,12 @@ describe("startup budget", () => {
     // 147,156 with tarballs fetched through the agent's callbacks (41/42 and 108/108 ms);
     // 147,684 with the progress hooks and `--no-progress`, the bar itself lazy; 147,803 with --verbose;
     // 147,999 with --version and the version in the usage; 148,003 with `upm` alone installing.
-    // 149,206 with `.upm/node_modules` (42/43 and 111/112 ms).
+    // 149,206 with `.upm/node_modules` (42/43 and 111/112 ms); 149,433 with Safari's streams
+    // read without an async iterator, `--help` within noise.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(149_250);
+    expect(bytes).toBeLessThanOrEqual(149_450);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
