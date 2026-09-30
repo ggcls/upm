@@ -11,7 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import type { View } from "../app.tsx";
 import { Code, formatBytes, preview } from "./code.tsx";
-import { LOCK, treePath } from "./files.tsx";
+import { LOCK, linked, treePath } from "./files.tsx";
 import { bindInstall, installCard } from "./install.ts";
 import { InstallButton } from "./install-button.tsx";
 import type { InstalledFile } from "../lib/install.ts";
@@ -116,7 +116,10 @@ function FileView(props: {
 }) {
   const { path, file, files, repo, root } = props;
   const { open } = useContext(Breadcrumb);
-  const shown = useMemo(() => preview(file.path, file.data), [file]);
+  // A symlink shows the file it leads to; one out of the tree shows its target path.
+  const target = useMemo(() => linked(files, file), [files, file]);
+  const content = target ?? file;
+  const shown = useMemo(() => preview(content.path, content.data), [content]);
   const [source, setSource] = useState(false);
   const markdown = shown.lang === "md" || shown.lang === "markdown";
   // Relative links and images in a README point into the tree, which holds the tarball's files:
@@ -137,8 +140,8 @@ function FileView(props: {
     <Crumbs
       path={path}
       meta={
-        file.link === undefined
-          ? `${formatBytes(file.size)} · ${shown.lang || "plain"}`
+        target
+          ? `${file.link === undefined ? "" : `→ ${file.link} · `}${formatBytes(target.size)} · ${shown.lang || "plain"}`
           : "symlink, to the path shown"
       }
       actions={

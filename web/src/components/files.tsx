@@ -436,6 +436,19 @@ function find(top: Map<string, Entry>, path: string): Entry | undefined {
   return entry;
 }
 
+/** The file a symlink leads to, through any chain of links, or undefined when not in the tree. */
+export function linked(
+  files: Map<string, InstalledFile>,
+  file: InstalledFile,
+): InstalledFile | undefined {
+  for (let hops = 0; file.link !== undefined; hops++) {
+    const next = hops < 16 ? files.get(resolve(file.path, file.link)) : undefined;
+    if (!next) return undefined;
+    file = next;
+  }
+  return file;
+}
+
 /** A relative link target, as a tree path from the link's own directory. */
 function resolve(from: string, target: string): string {
   const parts = from.split("/").slice(0, -1);
