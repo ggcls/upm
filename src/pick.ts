@@ -39,7 +39,7 @@ export interface PickOptions {
  * `engines.node` only. `os`/`cpu`/`libc` are the resolver's call, not ours. Off Node there is
  * no version to test against, so every engine passes.
  */
-function engineOk(manifest: Manifest): boolean {
+export function engineOk(manifest: Manifest): boolean {
   const range = manifest.engines?.node;
   const version = globalThis.process?.version;
   return !range || !version || satisfies(version, range, true);

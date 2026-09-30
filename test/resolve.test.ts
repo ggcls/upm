@@ -131,6 +131,46 @@ describe("basic walk", () => {
     expect(out.warnings).toEqual([]);
   });
 
+  it("warns when no version fits this Node's engines, and installs it anyway", async () => {
+    const fixture: Fixture = {
+      a: { "1.0.0": { engines: { node: ">=99" } } },
+      b: { "1.0.0": { engines: { node: ">=0.10" } } },
+      c: { "1.0.0": {}, "1.1.0": { engines: { node: ">=99" } } },
+    };
+    const root = { dependencies: { a: "^1", b: "^1", c: "^1" } };
+    const out = await resolve(fixture, root);
+    expect(Object.keys(out.packages)).toEqual(["a@1.0.0", "b@1.0.0", "c@1.0.0"]);
+    expect(out.warnings).toEqual([`a@1.0.0 wants node >=99, not ${process.version}`]);
+    // A kept version was said when it was picked.
+    expect((await resolve(fixture, root, { locked: out })).warnings).toEqual([]);
+  });
+
+  it("says nothing of engines for a dropped optional or another platform's build", async () => {
+    const other = process.platform === "win32" ? "linux" : "win32";
+    const out = await resolve(
+      {
+        opt: { "1.0.0": { engines: { node: ">=99" }, dependencies: { gone: "^1" } } },
+        build: { "1.0.0": { engines: { node: ">=99" }, os: [other] } },
+      },
+      { optionalDependencies: { opt: "^1", build: "^1" } },
+    );
+    expect(Object.keys(out.packages)).toEqual(["build@1.0.0"]);
+    expect(out.warnings).toEqual([expect.stringContaining("skipped optional opt@")]);
+  });
+
+  it("says nothing of engines off Node", async () => {
+    vi.stubGlobal("process", Object.create(process, { version: { value: undefined } }));
+    try {
+      const out = await resolve(
+        { a: { "1.0.0": { engines: { node: ">=99" } } } },
+        { dependencies: { a: "^1" } },
+      );
+      expect(out.warnings).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("normalizes bin", async () => {
     const out = await resolve(
       { a: { "1.0.0": { bin: "./cli/../cli.js" } } },

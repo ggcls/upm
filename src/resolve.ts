@@ -4,7 +4,7 @@ import { normalizeBin } from "./normalize-bin.ts";
 import { builtin } from "./builtin.ts";
 import { compare, maxSatisfying, parse, satisfies, validRange } from "./semver.ts";
 import { fromShasum } from "./integrity.ts";
-import { pickManifest } from "./pick.ts";
+import { engineOk, pickManifest } from "./pick.ts";
 import { createRegistry, tarballUrl } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import { parseDep, tarballSource } from "./spec.ts";
@@ -171,6 +171,7 @@ export async function resolveTree(
   const hardPeers: [string, string, string][] = []; // [consumer, name, range], settled after the walk
   const pending: Promise<void>[] = [];
   const warnings = new Set<string>();
+  const engines = new Map<string, string>(); // key -> why this Node is not the one it wants
   // Local entries are not replayed: a workspace is what its manifest says now.
   const locked: Record<string, ResolvedPackage> = {};
   for (const [key, pkg] of Object.entries(options.locked?.packages ?? {})) {
@@ -278,6 +279,13 @@ export async function resolveTree(
   ): Promise<void> {
     const found = record(name, m, source);
     records.set(key, found);
+    // Said, not enforced, as npm does: the pick already preferred a version this Node runs.
+    if (!engineOk(m)) {
+      engines.set(
+        key,
+        `${m.name}@${m.version} wants node ${m.engines!.node}, not ${globalThis.process?.version}`,
+      );
+    }
     // The libc read is off the pick and does not hold the children; `onPick` gets it to wait
     // on, since a musl build is not this machine's until it is in. A tarball's package.json is
     // whole, so it has none to read.
@@ -637,6 +645,7 @@ export async function resolveTree(
   const required = crawl(edges, tops.keys(), (e) => !e.optional);
   const shipped = shippedSet();
   const packages: Record<string, ResolvedPackage> = {};
+  let here: Platform | undefined;
   for (const key of [...reachable].sort()) {
     const found = records.get(key);
     if (!found) continue;
@@ -652,6 +661,9 @@ export async function resolveTree(
       dependencies: sorted(deps),
       ...(Object.keys(optionals).length > 0 && { optionalDependencies: sorted(optionals) }),
     };
+    // Only a package in the tree that runs here: not a pruned pick, not another platform's build.
+    const note = engines.get(key);
+    if (note && runsOn(found, (here ??= currentPlatform()))) warnings.add(note);
   }
 
   const direct: Record<string, string> = {};
