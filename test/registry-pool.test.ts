@@ -276,16 +276,17 @@ describe("createRegistryPool", () => {
 
   it("does not ask here again once the thread has said hello and is merely slow", async () => {
     // The question is handed to the thread while it boots; the thread says hello at once and
-    // answers 1 s later, past a 400 ms grace. The grace waits for the hello, not the answer:
+    // answers 2.5 s later, past a 1 s grace. The grace waits for the hello, not the answer:
     // asked here as well, the registry would see the question twice. The grace is wide enough
-    // for a thread to boot under a loaded test run, which is not what is being tested.
-    process.env.UPM_TEST_SLOW_MS = "1000";
-    const p = pool({ entry: SLOW, size: 1, startAt: 0, graceMs: 400 });
+    // for a thread to boot under a loaded test run, which is not what is being tested; only
+    // the hello can race it, so no condition can stand in for the clock here.
+    process.env.UPM_TEST_SLOW_MS = "2500";
+    const p = pool({ entry: SLOW, size: 1, startAt: 0, graceMs: 1000 });
     const found = await p.pick(parseSpec("foo@^1"));
     expect(found).toHaveProperty("deprecated", "thread");
     await new Promise((done) => setTimeout(done, 200));
     expect(hits.get("/foo")).toBe(1);
-  });
+  }, 10_000);
 
   it("does not wait on a thread that never speaks", async () => {
     process.env.UPM_TEST_DEAF = "1";

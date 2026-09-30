@@ -1358,6 +1358,10 @@ describe("add and remove", () => {
   let server: Server;
   let registry: string;
   let requests: string[];
+  /** Holds the answer to `url` until `after` is asked for, or four seconds pass. */
+  let gate:
+    | { url: string; after: string; release: () => void; passed: Promise<boolean> }
+    | undefined;
 
   /**
    * `a` at 1.0.0 and 1.1.0 (latest), `b` at 1.0.0, each one file that names its version.
@@ -1389,8 +1393,15 @@ describe("add and remove", () => {
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "upm-add-"));
     requests = [];
-    server = createServer((request, response) => {
+    gate = undefined;
+    server = createServer(async (request, response) => {
       requests.push(request.url ?? "");
+      const held = gate;
+      if (held && request.url === held.after) held.release();
+      if (held && request.url === held.url) {
+        const late = new Promise<boolean>((resolve) => setTimeout(resolve, 4_000, false));
+        await Promise.race([held.passed, late]);
+      }
       const [, name, ...rest] = (request.url ?? "").split("/");
       const versions = published[name ?? ""];
       const tarball = tarballs.get(rest[1] ?? "");
@@ -1577,9 +1588,13 @@ describe("add and remove", () => {
 
     it("starts a tarball as soon as the walk picks its package, and fills from that", async () => {
       await deps({ dependencies: { e: "^1" } });
+      // `e` is picked, and its tarball asked for, before `a` — its dependency — is answered.
+      // The walk cannot finish without `a`, so a tarball asked for only after it never is.
+      let release!: () => void;
+      const passed = new Promise<boolean>((resolve) => (release = () => resolve(true)));
+      gate = { url: "/a", after: "/e/-/e-1.0.0.tgz", release, passed };
       expect(await upm("install")).toMatchObject({ code: 0 });
-      // `e` is picked, and its tarball asked for, before `a` — its dependency — is looked up.
-      expect(requests.indexOf("/e/-/e-1.0.0.tgz")).toBeLessThan(requests.indexOf("/a"));
+      expect(await Promise.race([passed, Promise.resolve(false)])).toBe(true);
       // Once each: the fill found the prefetch in flight or done.
       expect(requests.filter(tgz).sort()).toEqual(["/a/-/a-1.1.0.tgz", "/e/-/e-1.0.0.tgz"]);
       expect(await installed("e")).toBe('module.exports = "e@1.0.0";\n');
