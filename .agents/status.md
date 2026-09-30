@@ -152,7 +152,10 @@ These need a scope decision, not just a patch:
   are older than the package. A name whose abbreviated document changed after the cutoff costs
   a full-document read for its `time`; a registry that leaves `modified` out of that document
   costs one per fresh pick. Exclude globs know `*`, `**` and `?`, not minimatch's classes and
-  braces. Start at `loadAged` in `src/registry.ts`.
+  braces. A registry that gives no publish dates holds nothing back, said once per registry
+  (`undated`). Locked versions are not checked: that needs their dates, and a kept document
+  rarely has them, so a lockfile edit can pin a version the cutoff would hide.
+  Start at `loadAged` in `src/registry.ts`.
 - No separate copies of a consumer for different peer environments. Different
   consumers can have different peer versions, but an own dependency can still conflict
   with that consumer's peer range. `--verify` reports such conflicts; it cannot fix them.

@@ -1900,6 +1900,8 @@ async function openRegistry(
   const metadata = { dir: metadataDir(storeDir(ctx.options.store)), mode } as const;
   const loaded = await import("./registry-pool.ts").catch(() => undefined);
   if (!loaded && size !== 0) ctx.noThreads();
+  const undated = (at: string) =>
+    ctx.log(`${at} gives no publish dates: min-release-age holds nothing back from it`, "warn");
   const pool = loaded
     ? loaded.createRegistryPool({
         registry,
@@ -1913,6 +1915,7 @@ async function openRegistry(
         noThreads: ctx.noThreads,
         metadata,
         expected,
+        undated,
       })
     : {
         ...createRegistry({
@@ -1921,6 +1924,7 @@ async function openRegistry(
           auth,
           before,
           exclude,
+          undated,
           cache: createDocumentCache(metadata),
         }),
         close() {},

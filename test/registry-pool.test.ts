@@ -102,6 +102,9 @@ beforeAll(async () => {
             time: { "1.0.0": "2020-01-01T00:00:00.000Z", "1.1.0": new Date().toISOString() },
           }),
         }),
+      // Changed lately, with no dates anywhere: a registry that holds nothing back.
+      "/undated": () => send(200, { ...as("undated"), modified: new Date().toISOString() }),
+      "/undated3": () => send(200, { ...as("undated3"), modified: new Date().toISOString() }),
       "/flaky": () => (flakyFailures-- > 0 ? send(500, {}) : send(200, as("flaky"))),
       "/slow": () => void setTimeout(() => send(200, as("slow")), 800),
     };
@@ -440,6 +443,19 @@ describe("createRegistryPool", () => {
       expect((await q.pick(parseSpec("foo@^1"))).version).toBe("1.1.0");
     }
     expect(hits.get("/aged")).toBe(4);
+  });
+
+  it("says once, from whichever thread, that a registry gives no publish dates", async () => {
+    const undated = vi.fn();
+    const p = pool({ before: Date.now() - 86_400_000, undated });
+    await ready(p);
+    // `undated` and `undated3` hash to different threads, so each thread tells it once.
+    for (const name of ["undated", "undated3", "undated", "aged"]) {
+      expect((await p.pick(parseSpec(`${name}@^1`))).version).toBe(
+        name === "aged" ? "1.0.0" : "1.1.0",
+      );
+    }
+    expect(undated.mock.calls).toEqual([[registry]]);
   });
 
   it("resolves the same tree with and without threads", async () => {

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRegistry, registryBase } from "../src/registry.ts";
 import { resolveTree } from "../src/resolve.ts";
 import { parseSpec } from "../src/spec.ts";
@@ -860,10 +860,38 @@ describe("before", () => {
 
   it("reads the dates when the document has no `modified`, and passes one with no `time`", async () => {
     const s = serve(corgi(), corgi());
-    const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch, before: cutoff });
+    const undated = vi.fn();
+    const registry = createRegistry({
+      registry: REGISTRY,
+      fetch: s.fetch,
+      before: cutoff,
+      undated,
+    });
 
     expect((await registry.view("foo")).tags()).toEqual({ latest: "2.0.0" });
     expect(s.calls.map((call) => call.accept)).toEqual([CORGI, FULL]);
+    // Said once for the registry, not once per name.
+    await registry.view("bar");
+    expect(undated.mock.calls).toEqual([[REGISTRY]]);
+  });
+
+  it("says nothing of a registry that dates its versions", async () => {
+    const undated = vi.fn();
+    const s = serve(corgi(at(0.1)));
+    const registry = createRegistry({
+      registry: REGISTRY,
+      fetch: s.fetch,
+      before: cutoff,
+      undated,
+    });
+    expect((await registry.view("foo")).tags()).toEqual({ latest: "1.1.0" });
+    expect(undated).not.toHaveBeenCalled();
+    // Nor of a name with no versions left to date: every one unpublished, say.
+    const gone = { name: "foo", versions: {}, modified: at(0.1) };
+    const t = serve(gone, { ...gone, time: { unpublished: { time: at(0.1) } } });
+    const again = createRegistry({ registry: REGISTRY, fetch: t.fetch, before: cutoff, undated });
+    await again.view("foo");
+    expect(undated).not.toHaveBeenCalled();
   });
 
   it("leaves an excluded name, or one a glob matches, alone", async () => {

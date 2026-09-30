@@ -19,7 +19,8 @@ const port = builtin.workers.parentPort;
 if (port) {
   const data = builtin.workers.workerData as WorkerData;
   const cache = data.metadata && createDocumentCache(data.metadata);
-  const registry = createRegistry({ ...data, cache });
+  const undated = (base: string) => port.postMessage({ id: -2, undated: base } satisfies Answer);
+  const registry = createRegistry({ ...data, cache, undated });
   port.on("message", (question: Question) => {
     void answer(registry, question).then(
       (found) => port.postMessage({ id: question.id, found } satisfies Answer),

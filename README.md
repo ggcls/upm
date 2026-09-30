@@ -641,7 +641,8 @@ highest version at or below it that is old enough. A range with no version old
 enough fails, and the error names the cutoff. The check applies only to new picks:
 versions already in `upm.lock` and exact versions such as `1.2.3` are kept as
 written. To check a package's age, upm reads the full registry document only when
-the package changed after the cutoff.
+the package changed after the cutoff. A registry that gives no publish dates cannot be
+checked; upm warns once for it and picks as if the check were off.
 
 For standard registry tarball URLs, `upm.lock` leaves out the registry address and
 uses the installing machine's config. This lets you change mirrors without

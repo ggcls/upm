@@ -74,6 +74,11 @@ export interface RegistryOptions {
   before?: number;
   /** `min-release-age-exclude`: names, or globs with `*`, `**` and `?`, never filtered. */
   exclude?: string[];
+  /**
+   * Told once per registry that gives a name changed since `before` no publish dates: its
+   * versions are then all picked from, however new.
+   */
+  undated?: (base: string) => void;
   /** Documents kept from earlier runs. None by default; `src/metadata.ts` keeps them on disk. */
   cache?: DocumentCache;
 }
@@ -234,6 +239,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   const times = new Map<string, Promise<Record<string, string> | undefined>>();
   const before = options.before;
   const excluded = globs(options.exclude ?? []);
+  const told = new Set<string>();
   const cache = options.cache;
   /** Names answered from a kept document without asking; and those asked about since. */
   const unasked = new Set<string>();
@@ -575,6 +581,11 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     if (Date.parse(doc.modified() ?? "") <= before) return doc;
     const versions = doc.versions() ?? Object.keys(doc.whole().versions ?? {});
     const found = await memo(times, name, () => loadTimes(name, versions));
+    const base = baseFor(name);
+    if (versions.length > 0 && !versions.some((v) => found?.[v]) && !told.has(base)) {
+      told.add(base);
+      options.undated?.(base);
+    }
     return found ? viewAsOf(doc, found, before) : doc;
   }
 

@@ -556,6 +556,18 @@ describe("api", () => {
     expect(lines).toContain(told);
   });
 
+  it("warns once when the registry gives no publish dates for the release age", async () => {
+    // This registry's document has neither `modified` nor `time`.
+    const told = `${registry()} gives no publish dates: min-release-age holds nothing back from it`;
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^5" } }));
+    await upm.lock(base);
+    expect(lines.filter((line) => line === told)).toHaveLength(1);
+    await rm(join(dir, "upm.lock"));
+    lines = [];
+    await upm.lock({ ...base, minReleaseAge: 0 });
+    expect(lines).toEqual(["wrote upm.lock · 1 pkgs"]);
+  });
+
   it("fails an offline install missing an optional, rather than skip it", async () => {
     const optionalDependencies = { nanoid: "^5" };
     await writeFile(join(dir, "package.json"), JSON.stringify({ optionalDependencies }));

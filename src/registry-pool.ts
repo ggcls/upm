@@ -70,6 +70,8 @@ export interface Answer {
   id: number;
   found?: Manifest;
   failed?: { message: string; code?: string; status?: number };
+  /** Not an answer: the thread's registry calling `undated`. */
+  undated?: string;
 }
 
 export interface RegistryPool extends Registry {
@@ -127,7 +129,14 @@ interface Slot {
  */
 export function createRegistryPool(options: PoolOptions = {}): RegistryPool {
   const cache = options.metadata && createDocumentCache(options.metadata);
-  const local = createRegistry({ ...options, cache });
+  // Each thread tells its own registries once; the caller hears each one once in all.
+  const told = new Set<string>();
+  const undated = (base: string) => {
+    if (told.has(base)) return;
+    told.add(base);
+    options.undated?.(base);
+  };
+  const local = createRegistry({ ...options, cache, undated });
   // Three did as well as two and better than four on `nuxt`; each is an isolate to boot
   // (~30 ms of another core, ~20 MB), so a machine with few cores gets fewer.
   const size = options.fetch ? 0 : (options.size ?? Math.min(3, cpus() - 1));
@@ -188,6 +197,7 @@ export function createRegistryPool(options: PoolOptions = {}): RegistryPool {
               job.grace = undefined;
             }
           }
+          if (answer.undated) undated(answer.undated);
           slot.ready = spoke = true;
           if (slots.every((other) => !other || other.ready)) clearTimeout(boot);
           const job = slot.pending.get(answer.id);
