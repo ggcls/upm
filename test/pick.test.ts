@@ -121,12 +121,14 @@ describe("a manifest as filed", () => {
     expect(() => pick(doc, "foo@2.0.0")).toThrow(/No matching version/);
   });
 
-  it("fails on another package's manifest, and takes one in another case", () => {
+  it("fails on another package's manifest, another case's too", () => {
     const other = pkg({ "1.0.0": { name: "bar" } }, { latest: "1.0.0" });
     expect(() => pick(other, "foo@^1")).toThrowError(
       expect.objectContaining({ code: "EMISMATCH" }),
     );
-    expect(pick(pkg({ "1.0.0": { name: "FOO" } }), "foo@1.0.0").version).toBe("1.0.0");
+    expect(() => pick(pkg({ "1.0.0": { name: "FOO" } }), "foo@1.0.0")).toThrowError(
+      expect.objectContaining({ code: "EMISMATCH" }),
+    );
     // An alias asks under the name it fetches.
     expect(pick(pkg({ "1.0.0": {} }), "bar@npm:foo@^1").version).toBe("1.0.0");
   });

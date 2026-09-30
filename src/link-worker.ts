@@ -4,7 +4,7 @@ import { builtin } from "./builtin.ts";
 import type { Shard, ShardResult } from "./link.ts";
 import type { PackageIndex } from "./store.ts";
 import { sameIntegrity } from "./integrity.ts";
-import { isIndex, linkArgs, mismatch } from "./util.ts";
+import { declaredIn, isIndex, linkArgs, misdeclared, mismatch } from "./util.ts";
 
 /** An Error does not survive structured clone, so the two fields callers read travel by hand. */
 export interface ShardReply {
@@ -113,7 +113,7 @@ export function runShard(shard: Shard, linker: Linker): ShardResult {
  * A small entry's store index, checked as the main thread checks one: missing, torn or another
  * tarball's is ELINK, and the tarball of another package is EMISMATCH.
  */
-function readIndex({ index: file, integrity, want }: Shard): PackageIndex {
+function readIndex({ index: file, integrity, want, edges, blobDir }: Shard): PackageIndex {
   let parsed: unknown;
   try {
     parsed = JSON.parse(builtin.fs.readFileSync(file!, "utf8"));
@@ -126,9 +126,16 @@ function readIndex({ index: file, integrity, want }: Shard): PackageIndex {
   ) {
     throw fail(`${file} is not the package index it should be`);
   }
-  const wrong = want && mismatch(parsed, want);
-  if (wrong)
-    throw fail(`${want!.name}@${want!.version} cannot be installed: ${wrong}`, "EMISMATCH");
+  const { sep } = builtin.path;
+  const wrong =
+    (want && mismatch(parsed, want)) ||
+    (edges &&
+      misdeclared(
+        declaredIn(parsed, (at) => `${blobDir}${sep}${at.blob}`),
+        edges,
+      ));
+  const what = want ? `${want.name}@${want.version}` : file;
+  if (wrong) throw fail(`${what} cannot be installed: ${wrong}`, "EMISMATCH");
   return parsed;
 }
 

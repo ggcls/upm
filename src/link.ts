@@ -6,9 +6,11 @@ import { storeKeys } from "./keys.ts";
 import { createLimiter } from "./limit.ts";
 import {
   alive,
+  declaredIn,
   exists,
   linkArgs,
   list,
+  misdeclared,
   mismatch,
   trace,
   readLink,
@@ -106,6 +108,8 @@ export interface Shard {
   index?: string;
   integrity?: string;
   want?: Identity;
+  /** Its own edges, each to the package it landed on: what its package.json must declare. */
+  edges?: Record<string, string>;
 }
 
 export interface ShardResult {
@@ -153,6 +157,11 @@ interface Entry {
   readonly index: PackageIndex;
   /** `<key>/node_modules/<name>`: where the package sits under `.upm`. */
   home: string;
+}
+
+/** The package a registry entry's tarball must be: an alias's own, else its name's. */
+function identityOf(pkg: ResolvedPackage): Identity {
+  return { name: pkg.fetchName ?? pkg.name, version: pkg.version };
 }
 
 /** A bin: its file in the final tree, and the package and path it is read from. */
@@ -296,6 +305,47 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   // inodes. Probing per file would cost more than the fallback it guards.
   let copyOnly = false;
 
+  // What the tops' own edges reach, each held to its package.json by `sameTree`.
+  const reached = new Set(
+    Object.entries(resolution.root.dependencies).map(([n, v]) => `${n}@${v}`),
+  );
+  for (const pkg of Object.values(resolution.packages)) {
+    if (pkg.local === undefined) continue;
+    for (const [n, v] of Object.entries(allDeps(pkg))) {
+      if (!Object.hasOwn(pkg.peers ?? {}, n)) reached.add(`${n}@${v}`);
+    }
+  }
+
+  /**
+   * The edges a package.json must declare, each to what it landed on: the package, or a
+   * tarball's source. A top's own are `sameTree`'s. A peer settles on whatever the tree holds
+   * under its name, so it is left out only where a top's own edge put something else there:
+   * nothing else ties that to a package.json the lock cannot edit.
+   */
+  function edgesOf(pkg: ResolvedPackage): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [name, version] of Object.entries(allDeps(pkg))) {
+      const id = `${name}@${version}`;
+      const dep = resolution.packages[id];
+      if (!dep || dep.local !== undefined) continue;
+      const real = dep.source ?? dep.fetchName ?? name;
+      if (
+        Object.hasOwn(pkg.peers ?? {}, name)
+          ? real === name || !reached.has(id)
+          : pkg.local === undefined
+      ) {
+        out[name] = real;
+      }
+    }
+    return out;
+  }
+
+  // A workspace has no index to read, and no package.json that could make a peer anything else.
+  for (const [id, pkg] of Object.entries(resolution.packages)) {
+    const wrong = pkg.local !== undefined && misdeclared({}, edgesOf(pkg));
+    if (wrong) throw fail(`${id} cannot be installed: ${wrong}`, "EMISMATCH");
+  }
+
   // Every entry the tree may have, before any index is read: an entry links its dependencies
   // by their homes, which the keys give, so a build waits only for the tarballs it needs.
   for (const [id, pkg] of Object.entries(resolution.packages)) {
@@ -303,6 +353,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
     if (production && pkg.dev) continue;
     const key = keys[id];
     if (!key) continue;
+    let held: PackageIndex | undefined;
     wanted.set(id, {
       pkg,
       key,
@@ -312,9 +363,14 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
         // A torn index reads as absent: the store lost it, and the caller fills again.
         const found = store.index(pkg.integrity);
         if (!found) throw fail(`${id} is not in the store at ${store.dir}`, "ELINK");
+        // Once per entry, not per index: two entries given one tarball are each held to it.
+        if (held === found) return found;
         // A tarball dependency's package.json says what it is; nothing else could.
-        const wrong = pkg.source === undefined ? mismatch(found, pkg) : undefined;
+        const wrong =
+          (pkg.source === undefined ? mismatch(found, identityOf(pkg)) : undefined) ??
+          misdeclared(declaredIn(found, store.blobPath), edgesOf(pkg));
         if (wrong) throw fail(`${id} cannot be installed: ${wrong}`, "EMISMATCH");
+        held = found;
         return found;
       },
     });
@@ -703,9 +759,8 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
         shims: texts,
         index: store.indexPath(pkg.integrity),
         integrity: pkg.integrity,
-        ...(pkg.source === undefined && {
-          want: { name: pkg.name, version: pkg.version, resolved: pkg.resolved },
-        }),
+        ...(pkg.source === undefined && { want: identityOf(pkg) }),
+        edges: edgesOf(pkg),
       };
       return [[whole], binCount];
     }

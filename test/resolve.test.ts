@@ -1994,6 +1994,18 @@ describe("resolving against a previous resolution", () => {
     expect(other.calls).toEqual(["d"]);
   });
 
+  it("names an alias's package, and never keeps one for a plain name", async () => {
+    const fixture: Fixture = { b: { "1.0.0": {} }, c: { "1.0.0": {} } };
+    const first = await resolve(fixture, { dependencies: { c: "npm:b@^1" } });
+    expect(first.packages["c@1.0.0"]).toMatchObject({ name: "c", fetchName: "b" });
+    // c@1.0.0 was b's tarball: `c` now means the package c, which the registry is asked for.
+    const plain = run(fixture, { dependencies: { c: "^1" } }, { locked: first });
+    const out = (await plain.result).packages["c@1.0.0"];
+    expect(out?.fetchName).toBeUndefined();
+    expect(out?.resolved).toBe("https://r/c/-/c-1.0.0.tgz");
+    expect(plain.calls).toEqual(["c"]);
+  });
+
   it("gives a new consumer the locked peer, and a locked consumer a new optional peer", async () => {
     const fixture: Fixture = {
       host: { "1.0.0": {}, "1.1.0": {} },

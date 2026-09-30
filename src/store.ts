@@ -42,6 +42,11 @@ export interface PackageIndex {
   /** What the tarball's package.json says it is, when it says. */
   name?: string;
   version?: string;
+  /**
+   * The dependencies its package.json installs as another package or from a url (`aliasesOf`),
+   * empty when none. Missing from an index written before it was kept: the package.json is read.
+   */
+  aliases?: Record<string, string>;
 }
 
 /**

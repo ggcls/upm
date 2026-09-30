@@ -154,7 +154,8 @@ export function filed(
   key: string,
 ): Manifest | undefined {
   if (!m) return undefined;
-  if (name && typeof m.name === "string" && m.name.toLowerCase() !== name.toLowerCase()) {
+  // Exactly: `JSONStream` and `jsonstream` are two packages.
+  if (name && typeof m.name === "string" && m.name !== name) {
     const message = `The registry sent ${m.name}@${m.version} for ${name}@${key}`;
     throw Object.assign(new Error(message), { code: "EMISMATCH" });
   }

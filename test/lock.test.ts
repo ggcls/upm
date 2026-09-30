@@ -304,6 +304,63 @@ describe("derivable resolved urls", () => {
     expect(formatLockfile(lock)).not.toContain("resolved");
   });
 
+  it("names an alias's package, and reads one a lock of before named only by its url", () => {
+    const url = (base: string) => `${base}/string-width/-/string-width-4.2.3.tgz`;
+    const alias = one("str", "4.2.3", url(NPM));
+    alias.packages["str@4.2.3"]!.fetchName = "string-width";
+    const lock = toLockfile(alias, hosts(NPM));
+    // The url too, for an upm that knows the alias by it alone.
+    expect(lock.packages["str@4.2.3"]).toEqual({
+      name: "string-width",
+      resolved: url(NPM),
+      integrity: "sha512-aaa",
+    });
+    expect(parseLockfile(formatLockfile(lock))).toEqual(lock);
+    expect(fromLockfile(lock, hosts(NPM)).packages["str@4.2.3"]).toMatchObject({
+      name: "str",
+      fetchName: "string-width",
+      resolved: url(NPM),
+    });
+    // Named without a url, it is fetched where its package is.
+    const bare = { ...lock, packages: { "str@4.2.3": { name: "string-width", integrity: "x" } } };
+    expect(fromLockfile(bare, hosts(MIRROR)).packages["str@4.2.3"]?.resolved).toBe(url(MIRROR));
+    // As a lock from before names were kept holds it: the url alone says which package.
+    const before = { ...lock, packages: { "str@4.2.3": { resolved: url(NPM), integrity: "x" } } };
+    expect(fromLockfile(before, hosts(NPM)).packages["str@4.2.3"]).toMatchObject({
+      fetchName: "string-width",
+      resolved: url(NPM),
+    });
+    // Or in JSR's and GitHub's, a scoped name before the version; never a path that only ends so.
+    for (const [resolved, real] of [
+      ["https://npm.jsr.io/~/11/@jsr/std__path/4.2.3.tgz", "@jsr/std__path"],
+      ["https://npm.pkg.github.com/download/@o/p/4.2.3/5f5b4a", "@o/p"],
+      [`${NPM}/@types%2fnode/-/node-4.2.3.tgz`, "@types/node"],
+      ["https://cdn.example.com/files/4.2.3.tgz", undefined],
+      [`${NPM}/lodash-es/-/lodash-4.2.3.tgz`, undefined],
+    ] as const) {
+      const old = { ...lock, packages: { "str@4.2.3": { resolved, integrity: "x" } } };
+      expect(fromLockfile(old, hosts(NPM)).packages["str@4.2.3"]?.fetchName, resolved).toBe(real);
+    }
+    // Written again, it is named.
+    expect(toLockfile(fromLockfile(before, hosts(NPM)), hosts(NPM)).packages["str@4.2.3"]).toEqual({
+      name: "string-width",
+      resolved: url(NPM),
+      integrity: "x",
+    });
+  });
+
+  it("refuses a name an alias entry cannot have", () => {
+    const lock = toLockfile(one("str", "4.2.3", `${NPM}/str/-/str-4.2.3.tgz`), hosts(NPM));
+    const named = (name: unknown) => ({
+      ...lock,
+      packages: { "str@4.2.3": { name, integrity: "sha512-aaa" } },
+    });
+    expect(() => fromLockfile(named("string-width") as never)).not.toThrow();
+    for (const bad of ["str", "", "../x", "@scope", 1]) {
+      expect(() => fromLockfile(named(bad) as never), String(bad)).toThrow(/\.name must be/);
+    }
+  });
+
   it("keeps the url when the tarball is served from somewhere else", () => {
     const odd = "https://cdn.example.com/blobs/nanoid.tgz";
     const lock = toLockfile(one("nanoid", "5.0.9", odd), hosts(NPM));
@@ -1554,10 +1611,16 @@ describe("workspaces", () => {
     });
 
     it("sees a pin its unchanged range does not allow, as `pickManifest` reads the range", () => {
-      const pinned = (specs: Record<string, Record<string, string>>, version: string) => {
+      const pinned = (
+        specs: Record<string, Record<string, string>>,
+        version: string,
+        name?: string,
+      ) => {
         const lock = toLockfile(tree());
         lock.root.specs = specs;
         lock.root.dependencies = { ...lock.root.dependencies, nanoid: version };
+        lock.packages[`nanoid@${version}`] ??= { integrity: "sha512-x" };
+        if (name) lock.packages[`nanoid@${version}`]!.name = name;
         return sameTree(lock, { ...manifest, ...specs }, found());
       };
       const deps = (spec: string) => ({ dependencies: { a: "^1", nanoid: spec } });
@@ -1569,21 +1632,44 @@ describe("workspaces", () => {
       // `*` takes the default tag, prerelease or not; a tag names no range to hold it to.
       expect(pinned(deps("*"), "6.0.0-beta.1")).toBe(true);
       expect(pinned(deps("latest"), "0.0.1")).toBe(true);
-      // An alias pins the aliased package's version.
-      expect(pinned(deps("npm:other@^5"), "5.2.0")).toBe(true);
-      expect(pinned(deps("npm:other@^5"), "4.0.0")).toBe(false);
+      // An alias pins the aliased package's version, of an entry that is that package.
+      expect(pinned(deps("npm:other@^5"), "5.2.0", "other")).toBe(true);
+      expect(pinned(deps("npm:other@^5"), "4.0.0", "other")).toBe(false);
+      expect(pinned(deps("npm:other@^5"), "5.3.0")).toBe(false);
+      expect(pinned(deps("npm:other@^5"), "5.4.0", "evil")).toBe(false);
+      expect(pinned(deps("npm:other@latest"), "5.5.0", "evil")).toBe(false);
+      // A plain name never pins an alias's entry.
+      expect(pinned(deps("^5"), "5.6.0", "other")).toBe(false);
       // A name in several groups is held to the range the resolver walks: optional, then prod.
       const both = { dependencies: { a: "^1", nanoid: "^5" }, devDependencies: { nanoid: "^4" } };
       expect(pinned(both, "5.0.0")).toBe(true);
       expect(pinned(both, "4.0.0")).toBe(false);
       const optional = { ...both, optionalDependencies: { nanoid: "^4" } };
       expect(pinned(optional, "4.0.0")).toBe(true);
-      // A workspace's own pins, and one its tarball or link edge has nothing to say about.
+      // A tarball spec pins its own source, a workspace spec a workspace, and nothing else does.
+      const url = "https://x/nanoid.tgz";
+      expect(pinned(deps(url), url)).toBe(true);
+      expect(pinned(deps(url), "https://x/other.tgz")).toBe(false);
+      expect(pinned(deps(url), "5.0.0")).toBe(false);
+      expect(pinned(deps("file:./n.tgz"), "file:n.tgz")).toBe(true);
+      expect(pinned(deps("workspace:*"), "5.0.0")).toBe(false);
+      // A workspace's own pins; its tarball is where its own package.json says.
       const lock = toLockfile(tree());
       lock.workspaces!["packages/a"]!.dependencies!.nanoid = "4.0.0";
       expect(sameTree(lock, manifest, found())).toBe(false);
-      lock.workspaces!["packages/a"]!.dependencies!.nanoid = "https://x/nanoid.tgz";
-      expect(sameTree(lock, manifest, found())).toBe(true);
+      lock.workspaces!["packages/a"]!.dependencies!.nanoid = url;
+      lock.packages[`nanoid@${url}`] = { version: "5.0.0", integrity: "sha512-x" };
+      expect(sameTree(lock, manifest, found())).toBe(false);
+      // A path is read from the workspace, and kept from the root.
+      const local = found();
+      const dependencies = { b: "workspace:*", nanoid: "file:../n.tgz" };
+      local[0]!.manifest = { ...local[0]!.manifest, dependencies };
+      const ws = lock.workspaces!["packages/a"]!;
+      ws.specs = { ...ws.specs, dependencies };
+      ws.dependencies!.nanoid = "file:packages/n.tgz";
+      expect(sameTree(lock, manifest, local)).toBe(true);
+      ws.dependencies!.nanoid = "file:n.tgz";
+      expect(sameTree(lock, manifest, local)).toBe(false);
     });
 
     it("sees a workspace's ranges or peers move", () => {

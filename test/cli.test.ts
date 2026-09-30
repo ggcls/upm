@@ -1215,11 +1215,14 @@ describe("startup budget", () => {
     // unframed tarball bytes asked for once more, the same. 155,771 with a tree held while it is
     // relinked, the lock itself lazy, `--help` and a no-op install within noise. 156,685 with the
     // state naming only the files an install planned from, and an edit made again over another's,
-    // checked and written under a hold beside package.json.
+    // checked and written under a hold beside package.json. 159,173 with an alias named in
+    // upm.lock, every edge and peer held to what its dependent's package.json declares, and a
+    // top's tarball to its spec, `--help` within noise (52/51 and 129/130 ms), a warm and a
+    // no-op install too.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(156_690);
+    expect(bytes).toBeLessThanOrEqual(159_180);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

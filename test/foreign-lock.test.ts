@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readForeign } from "../src/foreign-lock.ts";
 import * as upm from "../src/index.ts";
-import { formatLockfile, parseLockfile } from "../src/lock.ts";
+import { formatLockfile, fromLockfile, parseLockfile } from "../src/lock.ts";
 import type { ForeignFile, LockEntry, Lockfile } from "../src/lock.ts";
 import { hashOf } from "./hash.ts";
 import { binOf } from "./link.ts";
@@ -92,9 +92,14 @@ describe("the nitro fixture, locked by each manager", () => {
     expect(read.warnings).toEqual([
       "package-lock.json settles a peer of plugin@1.0.0 two ways; upm links the highest",
     ]);
-    expect(read.lock.packages["str@4.2.3"]!.resolved).toBe(
-      "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz",
-    );
+    // Named, so install holds its tarball to string-width.
+    expect(read.lock.packages["str@4.2.3"]).toMatchObject({
+      name: "string-width",
+      resolved: "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz",
+    });
+    expect(fromLockfile(read.lock).packages["str@4.2.3"]).toMatchObject({
+      fetchName: "string-width",
+    });
   });
 
   it("gives a pnpm alias a node of its own", () => {
@@ -121,6 +126,7 @@ snapshots:
       dependencies: { str: "4.2.3" },
     });
     expect(Object.keys(lock.packages)).toEqual(["str@4.2.3"]);
+    expect(lock.packages["str@4.2.3"]).toMatchObject({ name: "string-width" });
     expect(lock.packages["str@4.2.3"]!.resolved).toContain(
       "/string-width/-/string-width-4.2.3.tgz",
     );

@@ -56,6 +56,13 @@ compatibility. Keep this page about open work, not completed implementation step
   is dropped as a missing one is. A targeted repair (refetch the one integrity the failure
   names, link again) would keep the fast fill and the fast repair. Start at `installTree`'s
   `ELINK` catch in `src/api.ts`.
+- **A url tarball's bytes are the lockfile's word:** a url dependency's entry is linked from
+  whatever the store holds under its integrity, and nothing checks what those bytes are, so a
+  lock edited to give it the integrity of any tarball already in the store (another package's
+  from any project on the machine) installs that under the dependency's name, frozen or not.
+  A registry package is held to its name; a url has no name to hold it to. A fix needs the
+  store to know which urls an integrity was fetched from, or a request per url tarball. Start
+  at `adopt` in `src/store.ts` and where `linkTree` in `src/link.ts` skips `mismatch`.
 - **A url tarball changed in place is not picked up:** the lockfile pins its bytes, so a
   server that now serves others fails the install with `EINTEGRITY` naming the source (`stale`
   in `src/api.ts`); the way out is remove and add. A local one is read again (`movedTarballs`).
@@ -164,11 +171,16 @@ These need a scope decision, not just a patch:
   each. One found in a later round, behind a fetched peer, settles against what is already
   fetched and can also get its own. Start at `fetchPeer` in `src/resolve.ts`.
 - An alias does not supply a peer under the package's real name.
-- A tarball is held to the name and version its package.json claims (`mismatch` in
-  `src/util.ts`). An entry whose `resolved` is another registry package's tarball at the same
-  version still passes, as an alias does: the lockfile does not say which entries are aliases,
-  so a `resolved` added by hand is for review to catch. A package.json without a name, and an
-  index or backend entry written before names were kept, cannot say, and pass.
+- A tarball is held to the name and version its package.json claims, and each edge to what its
+  dependent's package.json declares (`mismatch`, `misdeclared` in `src/util.ts`). A package.json
+  without a name, and an index or backend entry written before names were kept, cannot say,
+  and pass. The edges are the packument's, the declarations the tarball's package.json: a
+  version whose two disagree on an alias fails with EMISMATCH. A peer lands on an alias or a
+  tarball only where the root or a workspace declares one: where a dependency does (a package
+  that aliases `vite` and depends on a plugin that peers on it), the link fails with EMISMATCH.
+  Vouching for a dependency's alias needs every name its package.json declares in the index,
+  since a lock can add an edge no package.json names; `misdeclared` holds only the edges there
+  are. Start at `edgesOf` in `src/link.ts`.
 - `dedupe` prefers versions already locked; it is not an upgrade strategy. A fresh resolve
   requires removing the lockfile and `node_modules`, whose copy of the lockfile an install
   takes back (`upm update` is the url tarball gap above).

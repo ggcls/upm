@@ -22,7 +22,7 @@ import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as upm from "../src/index.ts";
 import { parseLockfile } from "../src/resolver.ts";
@@ -1458,10 +1458,19 @@ describe("tarball dependencies", () => {
 });
 
 describe("a tarball is the package it is installed as", () => {
-  /** `name@version` on the registry, its tarball's package.json saying `says`. */
-  function publish(name: string, version: string, says: object = { name, version }): string {
+  /**
+   * `name@version` on the registry, its tarball's package.json saying `says`; `dependencies`
+   * in both, as a registry serves them.
+   */
+  function publish(
+    name: string,
+    version: string,
+    says: object = { name, version },
+    dependencies?: Record<string, string>,
+    peerDependencies?: Record<string, string>,
+  ): string {
     const tgz = makeTarball([
-      { path: "package.json", data: JSON.stringify(says) },
+      { path: "package.json", data: JSON.stringify({ ...says, dependencies, peerDependencies }) },
       { path: "index.js", data: `module.exports = ${JSON.stringify(`${name}@${version}`)};\n` },
     ]);
     const path = `/${name}/-/${name.split("/").at(-1)}-${version}.tgz`;
@@ -1470,6 +1479,8 @@ describe("a tarball is the package it is installed as", () => {
       name,
       version,
       dist: { tarball: `${registry()}${path}`, integrity: hashOf(tgz) },
+      ...(dependencies && { dependencies }),
+      ...(peerDependencies && { peerDependencies }),
     };
     docs[`/${name.replace("/", "%2f")}`] = {
       name,
@@ -1496,8 +1507,14 @@ describe("a tarball is the package it is installed as", () => {
     await expect(upm.install(base)).rejects.toMatchObject({ code: "EMISMATCH" });
   });
 
-  it("takes a version spelled another way, a name in another case, and an alias", async () => {
-    publish("pkg-a", "1.0.0", { name: "PKG-A", version: "v1.0.0+build.5" });
+  it("refuses a tarball whose package.json names the package in another case", async () => {
+    publish("pkg-a", "1.0.0", { name: "PKG-A", version: "1.0.0" });
+    await writeFile(join(dir, "package.json"), '{ "dependencies": { "pkg-a": "^1" } }');
+    await expect(upm.install(base)).rejects.toMatchObject({ code: "EMISMATCH" });
+  });
+
+  it("takes a version spelled another way, and an alias", async () => {
+    publish("pkg-a", "1.0.0", { name: "pkg-a", version: "v1.0.0+build.5" });
     publish("pkg-b", "1.0.0");
     // Old npm published loose versions, and the registry keys them as semver reads them.
     publish("pkg-c", "1.0.2-beta", { name: "pkg-c", version: "1.0.2beta" });
@@ -1595,6 +1612,280 @@ describe("a tarball is the package it is installed as", () => {
     await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({
       code: "EMISMATCH",
     });
+  });
+
+  /** Installs `deps`, then lets `edit` change upm.lock, the store keeping every tarball. */
+  async function locked(
+    deps: object,
+    edit: (packages: Record<string, any>, lock: any) => void,
+    manifest: object = {},
+  ) {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ ...manifest, dependencies: deps }));
+    const file = join(dir, "upm.lock");
+    await rm(file, { force: true }); // an edit before stands under an unchanged package.json
+    await upm.install(base);
+    const lock = await readJson(file);
+    edit(lock.packages, lock);
+    await writeFile(file, JSON.stringify(lock, null, 2));
+    return lock;
+  }
+
+  /** Every way a frozen install can link the tree: over it, fresh, on the pool. */
+  async function refused(code: string) {
+    await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({ code });
+    await rm(join(dir, "node_modules"), { recursive: true, force: true });
+    for (const experimental of [base.experimental, pooled]) {
+      await expect(upm.install({ ...base, frozen: true, experimental })).rejects.toMatchObject({
+        code,
+      });
+    }
+  }
+
+  it("refuses another package of the same version, named as an alias or not", async () => {
+    publish("pkg-a", "1.0.0");
+    const evil = publish("evil", "1.0.0");
+    const deps = { "pkg-a": "^1", evil: "^1" }; // so evil's tarball is in the store
+    const entry = (packages: Record<string, any>) => packages["pkg-a@1.0.0"];
+    const url = `${registry()}/evil/-/evil-1.0.0.tgz`;
+    // Its integrity alone: pkg-a's url, evil's tarball.
+    await locked(deps, (packages) => void (entry(packages).integrity = evil));
+    await refused("EMISMATCH");
+    // Evil's url too, which reads as an alias of evil, or named one: package.json says pkg-a.
+    await locked(deps, (packages) =>
+      Object.assign(entry(packages), { resolved: url, integrity: evil }),
+    );
+    await refused("ELOCK");
+    await locked(deps, (packages) =>
+      Object.assign(entry(packages), { name: "evil", integrity: evil }),
+    );
+    await refused("ELOCK");
+    await upm.install(base);
+    expect(await code("pkg-a")).toContain("pkg-a@1.0.0");
+  });
+
+  it("refuses a dependency's edge given another package of the same version", async () => {
+    publish("pkg-q", "1.0.0");
+    publish("pkg-p", "1.0.0", undefined, { "pkg-q": "^1" });
+    const evil = publish("evil", "1.0.0");
+    // The lock may call it an alias of evil; pkg-p's own package.json says otherwise.
+    const resolved = `${registry()}/evil/-/evil-1.0.0.tgz`;
+    for (const name of [undefined, "evil"]) {
+      await locked({ "pkg-p": "^1", evil: "^1" }, (packages) => {
+        Object.assign(packages["pkg-q@1.0.0"], { name, resolved, integrity: evil });
+      });
+      await refused("EMISMATCH");
+    }
+  });
+
+  it("refuses an alias a dependency declares, given the package of the alias's name", async () => {
+    publish("pkg-q", "1.0.0");
+    publish("pkg-p", "1.0.0", undefined, { "q-cjs": "npm:pkg-q@^1" });
+    // Someone published the alias's own name, at the same version: its tarball is where the
+    // registry keeps `q-cjs`, so the lock needs only its name, url and integrity edited.
+    const squat = publish("q-cjs", "1.0.0");
+    await locked({ "pkg-p": "^1" }, (packages) => {
+      const entry = packages["q-cjs@1.0.0"];
+      expect(entry.name).toBe("pkg-q");
+      delete entry.name;
+      delete entry.resolved;
+      entry.integrity = squat;
+    });
+    await refused("EMISMATCH");
+  });
+
+  it("names an alias in upm.lock, and still reads one a lock of before left unnamed", async () => {
+    publish("pkg-q", "1.0.0");
+    publish("pkg-p", "1.0.0", undefined, { "q-cjs": "npm:pkg-q@^1" });
+    publish("pkg-b", "1.0.0");
+    const deps = { "pkg-p": "^1", "renamed-b": "npm:pkg-b@^1" };
+    const lock = await locked(deps, () => {});
+    // Named, and its url kept for an upm that reads only that.
+    expect(lock.packages["renamed-b@1.0.0"]).toMatchObject({
+      name: "pkg-b",
+      resolved: `${registry()}/pkg-b/-/pkg-b-1.0.0.tgz`,
+    });
+    expect(lock.packages["q-cjs@1.0.0"]).toMatchObject({ name: "pkg-q" });
+    // As upm wrote them before: no name, the url naming the package.
+    await locked(deps, (packages) => {
+      for (const [key, real] of [
+        ["renamed-b@1.0.0", "pkg-b"],
+        ["q-cjs@1.0.0", "pkg-q"],
+      ] as const) {
+        delete packages[key].name;
+        packages[key].resolved = `${registry()}/${real}/-/${real}-1.0.0.tgz`;
+      }
+    });
+    for (const experimental of [base.experimental, pooled]) {
+      await rm(join(dir, "node_modules"), { recursive: true, force: true });
+      await upm.install({ ...base, frozen: true, experimental });
+      expect(await code("renamed-b")).toContain("pkg-b@1.0.0");
+      // pkg-p's own q-cjs sits beside it in its entry.
+      const beside = join(dirname(await realpath(join(dir, "node_modules", "pkg-p"))), "q-cjs");
+      expect(await readFile(join(beside, "index.js"), "utf8")).toContain("pkg-q@1.0.0");
+    }
+  });
+
+  it("reads what a package aliases off its package.json when its index is older", async () => {
+    publish("pkg-q", "1.0.0");
+    const p = publish("pkg-p", "1.0.0", undefined, { "q-cjs": "npm:pkg-q@^1" });
+    const squat = publish("q-cjs", "1.0.0");
+    await locked({ "pkg-p": "^1" }, () => {});
+    // As an index was written before it kept what the package aliases.
+    const { createStore } = await import("../src/store.ts");
+    const at = createStore({ dir: base.store! }).indexPath(p);
+    const index = await readJson(at);
+    expect(index.aliases).toEqual({ "q-cjs": "pkg-q" });
+    delete index.aliases;
+    await writeFile(at, JSON.stringify(index));
+    await rm(join(dir, "node_modules"), { recursive: true });
+    await upm.install({ ...base, frozen: true });
+    await locked({ "pkg-p": "^1" }, (packages) => {
+      delete packages["q-cjs@1.0.0"].name;
+      delete packages["q-cjs@1.0.0"].resolved;
+      packages["q-cjs@1.0.0"].integrity = squat;
+    });
+    await refused("EMISMATCH");
+  });
+
+  it("refuses a peer given another package, whatever the lock calls the edge", async () => {
+    publish("host", "1.0.0");
+    publish("pkg-q", "1.0.0");
+    publish("plugin", "1.0.0", undefined, { "q-cjs": "npm:pkg-q@^1" }, { host: "^1" });
+    const evil = publish("evil", "1.0.0");
+    const squat = publish("q-cjs", "1.0.0");
+    // A package of evil's own, which does alias host to it.
+    const voucher = publish("voucher", "1.0.0", undefined, { host: "npm:evil@^1" });
+    const deps = { plugin: "^1", evil: "^1" };
+    const url = `${registry()}/evil/-/evil-1.0.0.tgz`;
+    const lie = (packages: Record<string, any>) => {
+      Object.assign(packages["plugin@1.0.0"], {
+        peerDependencies: { host: "^1", "q-cjs": "^1" },
+        peers: { host: "required", "q-cjs": "required" },
+      });
+    };
+    for (const edit of [
+      // The peer the resolve fetched, as another package's url.
+      (packages: Record<string, any>) =>
+        Object.assign(packages["host@1.0.0"], { resolved: url, integrity: evil }),
+      // Named, and the edge no longer a peer.
+      (packages: Record<string, any>) => {
+        Object.assign(packages["host@1.0.0"], { name: "evil", integrity: evil });
+        delete packages["plugin@1.0.0"].peers;
+      },
+      // Named, and put there by a package the lock adds, whose own package.json says so.
+      (packages: Record<string, any>) => {
+        Object.assign(packages["host@1.0.0"], { name: "evil", integrity: evil });
+        packages["plugin@1.0.0"].dependencies.voucher = "1.0.0";
+        packages["voucher@1.0.0"] = { integrity: voucher, dependencies: { host: "1.0.0" } };
+      },
+      // An own alias called a peer, given the package of the alias's name.
+      (packages: Record<string, any>) => {
+        lie(packages);
+        const squatted = { name: undefined, resolved: undefined, integrity: squat };
+        Object.assign(packages["q-cjs@1.0.0"], squatted);
+      },
+      // An own edge called a peer, given another package.
+      (packages: Record<string, any>) => {
+        lie(packages);
+        Object.assign(packages["host@1.0.0"], { name: "evil", integrity: evil });
+      },
+    ]) {
+      await locked(deps, edit);
+      await refused("EMISMATCH");
+    }
+  });
+
+  it("refuses a workspace's peer given another package", async () => {
+    publish("host", "1.0.0");
+    const evil = publish("evil", "1.0.0");
+    await mkdir(join(dir, "packages", "w"), { recursive: true });
+    const peers = { name: "w", version: "1.0.0", peerDependencies: { host: "^1" } };
+    await writeFile(join(dir, "packages", "w", "package.json"), JSON.stringify(peers));
+    const manifest = { workspaces: ["packages/*"] };
+    await locked(
+      { evil: "^1" },
+      (packages) => {
+        const resolved = `${registry()}/evil/-/evil-1.0.0.tgz`;
+        Object.assign(packages["host@1.0.0"], { resolved, integrity: evil });
+      },
+      manifest,
+    );
+    await refused("EMISMATCH");
+  });
+
+  it("takes a peer on what the root declares, and a package's own url", async () => {
+    publish("real-host", "1.0.0");
+    const tgz = makeTarball([
+      { path: "package.json", data: '{ "name": "dep", "version": "1.0.0" }' },
+      { path: "index.js", data: "module.exports = 'dep';\n" },
+    ]);
+    files["/dep.tgz"] = tgz;
+    const url = `${registry()}/dep.tgz`;
+    publish("plugin", "1.0.0", undefined, { dep: url }, { host: "^1", dep: "*" });
+    publish("other", "1.0.0", undefined, undefined, { dep: "*" });
+    // The root's alias of host and its url of dep are what plugin's and other's peers settle on.
+    const deps = { host: "npm:real-host@^1", dep: url, plugin: "^1", other: "^1" };
+    await locked(deps, () => {});
+    for (const experimental of [base.experimental, pooled]) {
+      await rm(join(dir, "node_modules"), { recursive: true, force: true });
+      await upm.install({ ...base, frozen: true, experimental });
+      const entry = (name: string) => realpath(join(dir, "node_modules", name));
+      const beside = async (from: string, name: string) =>
+        readFile(join(dirname(await entry(from)), name, "index.js"), "utf8");
+      expect(await beside("plugin", "host")).toContain("real-host@1.0.0");
+      expect(await beside("plugin", "dep")).toContain("'dep'");
+      expect(await beside("other", "dep")).toContain("'dep'");
+    }
+  });
+
+  it("refuses a tarball where the spec names something else, and anything else for a tarball", async () => {
+    publish("pkg-a", "1.0.0");
+    publish("pkg-p", "1.0.0", undefined, { "pkg-a": "^1" });
+    const tgz = (name: string, what: string) => {
+      const bytes = makeTarball([
+        { path: "package.json", data: JSON.stringify({ name, version: "1.0.0" }) },
+        { path: "index.js", data: `module.exports = ${JSON.stringify(what)};\n` },
+      ]);
+      files[`/${what}.tgz`] = bytes;
+      return { url: `${registry()}/${what}.tgz`, integrity: hashOf(bytes) };
+    };
+    const good = tgz("x", "good");
+    const bad = tgz("pkg-a", "bad");
+    // A registry spec given a tarball, as a root's edge and as a dependency's.
+    const move = (from: string) => (packages: Record<string, any>, lock: any) => {
+      const edges = from ? packages[from].dependencies : lock.root.dependencies;
+      edges["pkg-a"] = bad.url;
+      packages[`pkg-a@${bad.url}`] = { version: "1.0.0", integrity: bad.integrity };
+      if (from) delete lock.root.dependencies["pkg-a"];
+      delete packages["pkg-a@1.0.0"];
+    };
+    await locked({ "pkg-a": "^1" }, move(""));
+    await refused("ELOCK");
+    await locked({ "pkg-p": "^1" }, move("pkg-p@1.0.0"));
+    await refused("EMISMATCH");
+    // A tarball spec given another url.
+    await locked({ x: good.url }, (packages, lock) => {
+      lock.root.dependencies.x = bad.url;
+      packages[`x@${bad.url}`] = { version: "1.0.0", integrity: bad.integrity };
+      delete packages[`x@${good.url}`];
+    });
+    await refused("ELOCK");
+    // A workspace spec given the registry package of its name.
+    publish("w", "1.0.0");
+    await mkdir(join(dir, "packages", "w"), { recursive: true });
+    await writeFile(
+      join(dir, "packages", "w", "package.json"),
+      '{ "name": "w", "version": "1.0.0" }',
+    );
+    await locked(
+      { w: "workspace:*" },
+      (packages, lock) => {
+        lock.root.dependencies.w = "1.0.0";
+        packages["w@1.0.0"] = { integrity: (docs["/w"] as any).versions["1.0.0"].dist.integrity };
+      },
+      { workspaces: ["packages/*"] },
+    );
+    await refused("ELOCK");
   });
 });
 

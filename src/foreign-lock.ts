@@ -569,6 +569,7 @@ function build(
     if (!bin && node.hasBin) binless.push(key);
     const peers = node.peers && Object.keys(node.peers).length > 0 ? node.peers : undefined;
     packages[key] = {
+      ...(node.real && { name: node.real }),
       ...(!derivable(node) && {
         resolved: node.real
           ? tarballUrl(baseFor(node.real), node.real, node.version)

@@ -132,8 +132,16 @@ process is dead and the grace period is over.
 
 The store is keyed by integrity alone, so integrity proves bytes, not which package they
 are. An index keeps the name and version its tarball's package.json claims, and a registry
-package is linked only when they are its own; an alias passes on the name its tarball url
-names. Without that, a lockfile could give one package another's tarball.
+package is linked only when they are its own, spelled exactly: an alias's are the package
+its lock entry names. Nothing in upm.lock is trusted for that name. The root's and each
+workspace's package.json say what their own edges are (`sameTree`): an alias's package, a
+tarball's source, a workspace for a workspace spec. Each package's own package.json says what
+its edges are: the index keeps what it installs under another name or from a url, and an entry
+is linked only when every edge lands on what it declares (`misdeclared`), whatever the lock
+calls a peer. A peer settles on whatever the tree holds under its name, so it may land on an
+alias or a tarball only where the root's or a workspace's own edge put one. An older lock that
+names an alias only by its url is read as that alias, since nothing takes the url's word for
+it either. Without all this, a lockfile could give one package another's tarball.
 
 A store backend (`src/store-backend.ts`) is the one exception, and it is trusted as the store
 is: without the tarball nothing can check a package's file list against its integrity, so

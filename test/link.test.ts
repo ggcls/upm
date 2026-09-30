@@ -18,7 +18,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hashOf } from "./hash.ts";
 import { binOf, linkOf, readBin } from "./link.ts";
-import { linkArgs, mismatch, readLink } from "../src/util.ts";
+import { aliasesOf, linkArgs, misdeclared, mismatch, readLink } from "../src/util.ts";
 import { storeKeys } from "../src/keys.ts";
 import { builtin } from "../src/builtin.ts";
 import { linkTree } from "../src/link.ts";
@@ -1401,31 +1401,47 @@ describe("mismatch", () => {
     name,
     version,
   });
-  const npm = "https://registry.npmjs.org";
-
-  it.each([
-    ["lodash", `${npm}/lodash/-/lodash-1.0.0.tgz`],
-    ["@types/node", `${npm}/@types/node/-/node-1.0.0.tgz`],
-    ["@types/node", `${npm}/@types%2fnode/-/node-1.0.0.tgz`],
-    ["@jsr/std__path", "https://npm.jsr.io/~/11/@jsr/std__path/1.0.0.tgz"],
-    ["@owner/pkg", "https://npm.pkg.github.com/download/@owner/pkg/1.0.0/5f5b4a"],
-  ])("takes %s under an alias whose url names it", (name, resolved) => {
-    expect(mismatch(index(name), { name: "alias", version: "1.0.0", resolved })).toBeUndefined();
+  it("takes only the name it must be, spelled the same", () => {
+    expect(mismatch(index("lodash"), { name: "lodash", version: "1.0.0" })).toBeUndefined();
+    expect(mismatch(index("@types/node"), { name: "@types/node", version: "1.0.0" })).toBe(
+      undefined,
+    );
+    // Two real packages, a letter's case apart: one is never the other's tarball.
+    expect(mismatch(index("jsonstream"), { name: "JSONStream", version: "1.0.0" })).toMatch(
+      /not JSONStream@/,
+    );
+    // Whatever the url would say: the entry names the package, not the url.
+    expect(mismatch(index("node"), { name: "@types/node", version: "1.0.0" })).toMatch(/not @/);
+    expect(mismatch(index("evil"), { name: "lodash", version: "1.0.0" })).toMatch(/not lodash@/);
   });
 
-  it.each([
-    // The unscoped half of a scoped name, a segment of the registry's own path, a basename.
-    ["node", `${npm}/@types/node/-/node-1.0.0.tgz`],
-    ["npm", "https://host/api/npm/npm/x/-/x-1.0.0.tgz"],
-    ["x-1.0.0.tgz", `${npm}/x/-/x-1.0.0.tgz`],
-    ["lodash", `${npm}/lodash-es/-/lodash-es-1.0.0.tgz`],
-    ["lodash", `${npm}/lodash/2.0.0/lodash.tgz`],
-  ])("refuses %s where only part of %s names it", (name, resolved) => {
-    expect(mismatch(index(name), { name: "x", version: "1.0.0", resolved })).toMatch(/not x@/);
+  it("reads what a package.json aliases, and holds edges to it", () => {
+    const declared = aliasesOf({
+      dependencies: {
+        a: "npm:real@^1",
+        b: " npm:@s/real@2 ",
+        c: "^1",
+        d: "npm:x",
+        g: "HTTPS://h/g.tgz",
+      },
+      optionalDependencies: { d: "^3", e: "npm:@s/e" },
+      peerDependencies: { f: "npm:real@1" },
+    });
+    expect(declared).toEqual({ a: "real", b: "@s/real", e: "@s/e", g: "HTTPS://h/g.tgz" });
+    expect(misdeclared(declared, { a: "real", c: "c", d: "d", e: "@s/e", f: "f" })).toBe(undefined);
+    // An edge the package.json aliases, landed on the package of its own name.
+    expect(misdeclared(declared, { a: "a" })).toMatch(/makes a real, not a/);
+    // An edge it does not alias, landed on another package.
+    expect(misdeclared(declared, { c: "evil" })).toMatch(/makes c c, not evil/);
+    expect(misdeclared(declared, { b: "@s/other" })).toMatch(/not @s\/other/);
+    // A url is its own: another is refused, and so is one for a registry spec.
+    expect(misdeclared(declared, { g: "HTTPS://h/g.tgz" })).toBe(undefined);
+    expect(misdeclared(declared, { g: "https://h/other.tgz" })).toMatch(/not https/);
+    expect(misdeclared(declared, { c: "https://h/c.tgz" })).toMatch(/makes c c, not https/);
   });
 
   it("reads versions as a registry keys them, and nothing more loosely", () => {
-    const want = (version: string) => ({ name: "x", version, resolved: `${npm}/x/-/x.tgz` });
+    const want = (version: string) => ({ name: "x", version });
     for (const [said, key] of [
       ["v1.0.0+build.1", "1.0.0"],
       ["=1.0.0", "1.0.0"],

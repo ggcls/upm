@@ -8,7 +8,7 @@ import type { FileEntry, PackageIndex } from "./store.ts";
 import { extractTar } from "./tar.ts";
 import { createLimiter } from "./limit.ts";
 import { pid } from "./runtime.ts";
-import { sizeOfSync } from "./util.ts";
+import { aliasesOf, sizeOfSync } from "./util.ts";
 import { now, tick, tracing } from "./util.ts";
 
 // Content is hardlinked into every project sharing this store, so a write through any of
@@ -44,6 +44,7 @@ export interface Part {
   /** What the tarball's package.json says it is: on the first part only, for `assemble`. */
   name?: string;
   version?: string;
+  aliases?: Record<string, string>;
 }
 
 export interface PartFile {
@@ -282,7 +283,7 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
     // ahead of every inflate step and stretch it, which measured slower than this on `next`.
     // One block is a small tarball, and its files go straight to the disk if allowed.
     const io = tarball.length === 1 ? direct : pooled;
-    const { bins, name, version } = manifestOf(found.get("package.json")?.data);
+    const { bins, name, version, aliases } = manifestOf(found.get("package.json")?.data);
     const entries: FileEntry[] = [];
     const written = new Set<string>();
     const jobs: Promise<void>[] = [];
@@ -309,7 +310,7 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
     }
     if (tracing) tick("write", now() - t);
     entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-    return { integrity, files: entries, unpackedSize, name, version };
+    return { integrity, files: entries, unpackedSize, name, version, aliases };
   }
 
   async function split(source: AsyncIterable<Uint8Array>, most: number): Promise<Part[]> {
@@ -376,6 +377,7 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
       bins: declared,
       name,
       version,
+      aliases,
     } = manifestOf(manifest && packed(manifest.bin, manifest.file));
     // As many parts as the bytes are worth, and none too small to be worth its message: the
     // lightest bins fold into the next lightest until that holds.
@@ -397,7 +399,7 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
         const exec = (mode & 0o111) !== 0 || declared.has(path);
         return { path, exec, chunk, at, size, ...(temp && { temp, blob: blobOf(hash!, exec) }) };
       }),
-      ...(i === 0 && { name, version }),
+      ...(i === 0 && { name, version, aliases }),
     }));
   }
 
@@ -534,8 +536,8 @@ export function assemble(integrity: string, parts: Part[], blobs: string[][]): P
     });
   });
   entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const { name, version } = parts[0] ?? {};
-  return { integrity, files: entries, unpackedSize, name, version };
+  const { name, version, aliases = {} } = parts[0] ?? {};
+  return { integrity, files: entries, unpackedSize, name, version, aliases };
 }
 
 /** The five calls the writer makes, in the shape it makes them. `fs/promises` has them all. */
@@ -593,14 +595,16 @@ function manifestOf(manifest: Uint8Array | undefined): {
   bins: Set<string>;
   name?: string;
   version?: string;
+  aliases: Record<string, string>;
 } {
-  if (!manifest) return { bins: new Set() };
+  if (!manifest) return { bins: new Set(), aliases: {} };
   try {
     const json = JSON.parse(new TextDecoder().decode(manifest));
     const bins = new Set(Object.values(normalizeBin(json)));
-    return { bins, name: text(json?.name), version: text(json?.version) };
+    const aliases = aliasesOf(json);
+    return { bins, name: text(json?.name), version: text(json?.version), aliases };
   } catch {
-    return { bins: new Set() }; // A package.json we cannot read declares nothing.
+    return { bins: new Set(), aliases: {} }; // A package.json we cannot read declares nothing.
   }
 }
 

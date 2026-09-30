@@ -13,7 +13,13 @@ import { createLimiter } from "./limit.ts";
 import type { Manifest } from "./types.ts";
 
 export interface ResolvedPackage {
+  /** What it is installed as. */
   name: string;
+  /**
+   * The registry package, only when `name` is an alias for it (`"x": "npm:real@^1"`). Its
+   * tarball must be that package, and every dependent's package.json must name it so.
+   */
+  fetchName?: string;
   version: string;
   /** Both empty for a local entry: a workspace has no tarball. */
   resolved: string;
@@ -327,16 +333,21 @@ export async function resolveTree(
   }
 
   /**
-   * The locked version an edge can keep. Not for a tag, which only the registry can read. An
-   * alias only when its locked entry is proven to be the aliased package — its tarball is the
-   * one the registry serves for that name — since the alias may point elsewhere by now.
+   * The locked version an edge can keep. Not for a tag, which only the registry can read. Only
+   * an entry of the package the spec names: an alias may point elsewhere by now, and a plain
+   * spec must not keep what was an alias. An entry from a lockfile that did not name aliases
+   * yet is proven one by its tarball being where the registry serves that package.
    */
   function kept(spec: Spec): string | undefined {
     if (spec.type === "tag") return undefined;
-    const same = (version: string) =>
-      spec.fetchName === spec.name ||
-      locked[`${spec.name}@${version}`]?.resolved ===
-        tarballUrl(registry.baseFor(spec.fetchName), spec.fetchName, version);
+    const same = (version: string) => {
+      const entry = locked[`${spec.name}@${version}`];
+      if (entry?.fetchName !== undefined) return entry.fetchName === spec.fetchName;
+      return (
+        spec.fetchName === spec.name ||
+        entry?.resolved === tarballUrl(registry.baseFor(spec.fetchName), spec.fetchName, version)
+      );
+    };
     const versions = (lockedVersions.get(spec.name) ?? []).map((p) => p.version).filter(same);
     return maxSatisfying(versions, spec.fetchSpec);
   }
@@ -1050,6 +1061,7 @@ function fits(version: string, range: string): boolean {
 function record(name: string, m: Manifest, source?: string): ResolvedPackage {
   return {
     name,
+    ...(source === undefined && m.name !== name && { fetchName: m.name }),
     version: m.version,
     resolved: source ?? m.dist.tarball,
     integrity: integrityOf(m),

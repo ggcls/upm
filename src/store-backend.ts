@@ -7,7 +7,7 @@ import { digest, toBase64Url } from "./runtime.ts";
 import { authFor } from "./registry.ts";
 import type { PackageIndex, StoreOptions, Tarball } from "./store.ts";
 import type { Writer } from "./unpack.ts";
-import { isSafePath, sizeOfSync, trace } from "./util.ts";
+import { isNames, isSafePath, sizeOfSync, trace } from "./util.ts";
 
 /**
  * One call. It is abandoned once it makes no progress for 30 s: `signal` aborts and the store
@@ -70,6 +70,7 @@ export interface BackendIndex {
   /** What the tarball's package.json says it is, when it says: see `PackageIndex`. */
   name?: string;
   version?: string;
+  aliases?: Record<string, string>;
 }
 
 export interface BackendClient {
@@ -180,7 +181,7 @@ export function createBackendClient(
           );
         }
         trace("backend", { i: integrity, files: files.length });
-        const { name, version } = kept;
+        const { name, version, aliases } = kept;
         return {
           integrity,
           files,
@@ -188,6 +189,7 @@ export function createBackendClient(
           // Kept only as strings, which is all the linker compares.
           ...(typeof name === "string" && { name }),
           ...(typeof version === "string" && { version }),
+          ...(isNames(aliases) && { aliases }),
         };
       });
     } catch (error) {
@@ -234,8 +236,8 @@ export function createBackendClient(
       paths.set(hash, writer.blobPath(file.blob));
       return { path: file.path, hash, size: file.size, exec };
     });
-    const { name, version, unpackedSize } = index;
-    const kept: BackendIndex = { v: 1, integrity, unpackedSize, files, name, version };
+    const { name, version, aliases, unpackedSize } = index;
+    const kept: BackendIndex = { v: 1, integrity, unpackedSize, files, name, version, aliases };
     // What every reader would refuse is not worth keeping. The tar reader passes no path that
     // `checked` refuses, so this guards the index's other fields as much as its paths.
     try {

@@ -1,7 +1,7 @@
 // Small helpers shared across modules. Nothing here knows about packages.
 import type { Dirent } from "node:fs";
 import { builtin } from "./builtin.ts";
-import type { PackageIndex } from "./store.ts";
+import type { FileEntry, PackageIndex } from "./store.ts";
 
 /** The shape of a store index. Here, and not in store.ts, because the link worker reads one too. */
 export function isIndex(value: unknown): value is PackageIndex {
@@ -12,6 +12,7 @@ export function isIndex(value: unknown): value is PackageIndex {
     typeof index.integrity === "string" &&
     (index.name === undefined || typeof index.name === "string") &&
     (index.version === undefined || typeof index.version === "string") &&
+    (index.aliases === undefined || isNames(index.aliases)) &&
     Array.isArray(index.files) &&
     index.files.every(
       (file) =>
@@ -34,50 +35,98 @@ export function isSafePath(path: unknown): path is string {
   return typeof path === "string" && !UNSAFE_PATH.test(path);
 }
 
-/** A registry package as the tree names it: `resolved` is where its tarball is. */
+/** A registry package as the tree installs it: `name` is the package it must be. */
 export interface Identity {
   name: string;
   version: string;
-  resolved: string;
 }
 
 /**
  * Why an index is not the package it would be linked as, or nothing. The store is keyed by
  * integrity alone, so this is what stops a lockfile giving one package another's tarball. An
- * index from before names were kept, or a tarball whose package.json has none, cannot say.
+ * alias is checked against the package it names, which its entry records and its dependents'
+ * own package.json vouch for (see `misdeclared`). An index from before names were kept, or a
+ * tarball whose package.json has none, cannot say.
  */
 export function mismatch(index: PackageIndex, want: Identity): string | undefined {
   const { name, version } = index;
-  const named =
-    name === undefined ||
-    name.toLowerCase() === want.name.toLowerCase() ||
-    aliased(want.resolved, name, want.version);
+  const named = name === undefined || name === want.name;
   const versioned = version === undefined || plain(version) === plain(want.version);
   if (named && versioned) return undefined;
   return `its tarball is ${name ?? want.name}@${version ?? want.version}, not ${want.name}@${want.version}`;
 }
 
 /**
- * An alias installs a package under another name; only its tarball's url still names it: as
- * whole segments followed by `-` (`/<name>/-/`) or by the version (`/<name>/1.0.0.tgz`), and
- * never as the unscoped half of `/@scope/<name>/-/`.
+ * What a package.json says it installs under another name: `"x": "npm:real@^1"` is `x` ->
+ * `real`, and a url is its own: `"x": "https://…"` is `x` -> the url. Peers are left out: one
+ * is settled against whatever the tree holds under its name.
  */
-function aliased(resolved: string, name: string, version: string): boolean {
-  let url = resolved;
+export function aliasesOf(manifest: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  const json = manifest as Record<string, unknown> | null;
+  for (const group of ["dependencies", "optionalDependencies"]) {
+    const deps = json?.[group];
+    if (typeof deps !== "object" || deps === null) continue;
+    for (const [name, spec] of Object.entries(deps)) {
+      const trimmed = typeof spec === "string" ? spec.trim() : "";
+      if (/^https?:\/\//i.test(trimmed)) {
+        out[name] = trimmed;
+        continue;
+      }
+      if (!trimmed.startsWith("npm:")) {
+        delete out[name]; // optionalDependencies has the last word, as in npm
+        continue;
+      }
+      const rest = trimmed.slice(4);
+      const at = rest.indexOf("@", 1);
+      out[name] = at === -1 ? rest : rest.slice(0, at);
+    }
+  }
+  return out;
+}
+
+/**
+ * Why a package's own edges are not what its package.json declares, or nothing. `edges` is each
+ * edge's name and the package it landed on; `declared` is `aliasesOf` the package.json. A lock
+ * cannot make an edge an alias its dependent never wrote, or undo one it did.
+ */
+export function misdeclared(
+  declared: Record<string, string>,
+  edges: Record<string, string>,
+): string | undefined {
+  for (const [name, real] of Object.entries(edges)) {
+    const want = Object.hasOwn(declared, name) ? declared[name]! : name;
+    if (want !== real) return `its package.json makes ${name} ${want}, not ${real}`;
+  }
+  return undefined;
+}
+
+/**
+ * `aliasesOf` an entry's package.json: kept in its index, else — an index from before they
+ * were kept — read from the stored file. One that cannot be read declares nothing.
+ */
+export function declaredIn(
+  index: PackageIndex,
+  blobPath: (file: FileEntry) => string,
+): Record<string, string> {
+  if (index.aliases) return index.aliases;
+  const file = index.files.find((entry) => entry.path === "package.json");
+  if (!file) return {};
   try {
-    url = decodeURIComponent(resolved);
-  } catch {}
-  const parts = url.toLowerCase().split("/");
-  const own = name.toLowerCase().split("/");
-  const v = version.toLowerCase();
-  return parts.some((_, i) => {
-    const next = parts[i + own.length];
-    return (
-      !parts[i - 1]?.startsWith("@") &&
-      own.every((part, j) => parts[i + j] === part) &&
-      (next === "-" || next === v || next === `${v}.tgz`)
-    );
-  });
+    return aliasesOf(JSON.parse(builtin.fs.readFileSync(blobPath(file), "utf8")));
+  } catch {
+    return {};
+  }
+}
+
+/** A map of names to names, as an index keeps its aliases. */
+export function isNames(value: unknown): value is Record<string, string> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((name) => typeof name === "string")
+  );
 }
 
 /**

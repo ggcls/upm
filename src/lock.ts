@@ -8,7 +8,7 @@ import { pid } from "./runtime.ts";
 import { parse, satisfies } from "./semver.ts";
 import { declaredSpecs, declaredWorkspaces, localPath, localShape, rootEdges } from "./resolve.ts";
 import type { PeerKind, Resolution, ResolvedPackage, RootManifest, RootSpecs } from "./resolve.ts";
-import { parseDep } from "./spec.ts";
+import { parseDep, tarballSource } from "./spec.ts";
 import type { Spec } from "./spec.ts";
 import { replaceFile, trace } from "./util.ts";
 
@@ -28,6 +28,12 @@ export interface LockEntry {
    * — where a registry package's ends in its version. This is the version it calls itself.
    */
   version?: string;
+  /**
+   * Only for an alias: the registry package its key's name installs (`"x": "npm:real@^1"` is
+   * `"x@1.0.0": { "name": "real" }`). The tarball must be that package, and every dependent's
+   * own package.json must alias it so, or the link refuses it.
+   */
+  name?: string;
   /**
    * Only when the tarball is not where the registry would put it. The usual url is
    * `<registry>/<name>/-/<basename>-<version>.tgz`, which `tarballUrl` rebuilds at install
@@ -109,12 +115,18 @@ export function toLockfile(resolution: Resolution, baseFor = npmjs): Lockfile {
     }
     // A tarball's key says where it is; what is left to say is the version inside.
     if (pkg.source !== undefined) {
-      packages[key] = { ...pkg, resolved: undefined };
+      packages[key] = { ...pkg, name: undefined, resolved: undefined };
       continue;
     }
-    // Dropped when it is the shape every registry uses; kept verbatim when it is not.
+    // Dropped when it is the shape every registry uses; kept verbatim when it is not. An
+    // alias's url is kept too, for an older upm that knows the alias by it alone.
     const derivable = pkg.resolved === tarballUrl(baseFor(pkg.name), pkg.name, pkg.version);
-    packages[key] = { ...pkg, version: undefined, resolved: derivable ? undefined : pkg.resolved };
+    packages[key] = {
+      ...pkg,
+      name: pkg.fetchName,
+      version: undefined,
+      resolved: derivable ? undefined : pkg.resolved,
+    };
   }
   return assemble(root(resolution.root), workspaceEntries(workspaces), entries(packages));
 }
@@ -160,14 +172,18 @@ export function fromCheckedLockfile(lock: Lockfile, baseFor = npmjs): Resolution
     const tail = key.slice(at + 1);
     const source = entry.version === undefined ? undefined : tail;
     const version = entry.version ?? tail;
-    if (!source && entry.resolved && !onRegistry(entry.resolved, name, baseFor)) {
+    // A lockfile from before aliases were named says so only in the url. Nothing trusts that:
+    // the tarball and the dependents' package.json still have to agree with it.
+    const real = source ? name : (entry.name ?? packageOf(entry.resolved, version) ?? name);
+    if (!source && entry.resolved && !onRegistry(entry.resolved, real, baseFor)) {
       const host = originOf(entry.resolved);
       elsewhere.set(host, [...(elsewhere.get(host) ?? []), key]);
     }
     packages[key] = {
       name,
+      ...(real !== name && { fetchName: real }),
       version,
-      resolved: source ?? entry.resolved ?? tarballUrl(baseFor(name), name, version),
+      resolved: source ?? entry.resolved ?? tarballUrl(baseFor(real), real, version),
       integrity: entry.integrity,
       ...(source !== undefined && { source }),
       dependencies: { ...entry.dependencies },
@@ -210,6 +226,25 @@ function onRegistry(url: string, name: string, baseFor: BaseFor): boolean {
   const scopes = path.split("/").filter((part) => part.startsWith("@"));
   const bases = [name, "-", ...scopes.map((scope) => `${scope}/-`)].map(baseFor);
   return [...bases, registryBase()].some((at) => host(at) === host(url));
+}
+
+/**
+ * The package a url in a registry's shape is the tarball of: `…/<name>/-/<base>-<version>.tgz`,
+ * or a scoped name before its version, as JSR's `…/@jsr/x/1.0.0.tgz` and GitHub's `…/1.0.0/<id>`.
+ */
+function packageOf(url: string | undefined, version: string): string | undefined {
+  if (url === undefined) return undefined;
+  let path = url.replace(/[?#].*$/, "");
+  try {
+    path = decodeURIComponent(path);
+  } catch {}
+  const parts = path.split("/");
+  const n = parts.length;
+  const at = (i: number) =>
+    parts[i - 1]?.startsWith("@") ? `${parts[i - 1]}/${parts[i]}` : parts[i];
+  if (parts[n - 2] === "-" && parts[n - 1] === `${parts[n - 3]}-${version}.tgz`) return at(n - 3);
+  const i = parts[n - 1] === `${version}.tgz` ? n - 1 : parts.indexOf(version, 3);
+  return i > 2 && parts[i - 2]!.startsWith("@") ? at(i - 1) : undefined;
 }
 
 /** Where a url points, without any credentials in it; the url itself when it has no origin. */
@@ -255,7 +290,7 @@ export function sameTree(
   const patterns = JSON.stringify(declaredWorkspaces(manifest) ?? []);
   if (patterns !== JSON.stringify(lock.root.workspaces ?? [])) return false;
   if (!sameSpecs(declaredSpecs(manifest), lock.root.specs)) return false;
-  if (!pinsFit(lock.root.specs, lock.root.dependencies)) return false;
+  if (!pinsFit(lock, lock.root.specs, lock.root.dependencies)) return false;
   const locked = lock.workspaces ?? {};
   if (Object.keys(locked).length !== workspaces.length) return false;
   return workspaces.every((ws) => {
@@ -264,7 +299,7 @@ export function sameTree(
     const shape = localShape(ws.manifest);
     if (!sameSpecs(shape.specs, entry.specs)) return false;
     const edges = { ...entry.optionalDependencies, ...entry.dependencies };
-    if (!pinsFit(entry.specs, edges)) return false;
+    if (!pinsFit(lock, entry.specs, edges, ws.path)) return false;
     return (["bin", "peerDependencies", "peers"] as const).every(
       (field) =>
         JSON.stringify(sorted(shape[field]) ?? {}) === JSON.stringify(sorted(entry[field]) ?? {}),
@@ -273,20 +308,34 @@ export function sameTree(
 }
 
 /**
- * Whether each version a top pins is one its declared range could have picked. A lock edited
- * by hand, or merged badly, can pin anything under an unchanged range. A name in several
- * groups is held to the range the resolver walks; a tag, a workspace or a tarball has nothing
- * to compare.
+ * Whether each version a top pins is one its declared range could have picked, of the package
+ * it names: an alias's own, and never one for a plain name. A lock edited by hand, or merged
+ * badly, can pin anything under an unchanged range. A name in several groups is held to the
+ * range the resolver walks; a tarball is the one its spec names, a workspace spec lands on a
+ * workspace, and a tag has only its name to compare.
  */
-function pinsFit(specs: RootSpecs = {}, edges: Record<string, string> = {}): boolean {
+function pinsFit(
+  lock: Lockfile,
+  specs: RootSpecs = {},
+  edges: Record<string, string> = {},
+  base = "",
+): boolean {
   return rootEdges(specs).every(([name, raw]) => {
-    const pinned = Object.hasOwn(edges, name) ? edges[name]! : "";
-    if (!parse(pinned)) return true;
+    if (!Object.hasOwn(edges, name)) return true;
+    const pinned = edges[name]!;
     let spec: Spec;
     try {
       spec = parseDep(name, raw);
     } catch {
       return true; // the resolve says what is wrong with it
+    }
+    if (spec.type === "tarball") return pinned === tarballSource(spec.fetchSpec, base);
+    if (spec.type === "workspace") return pinned.startsWith("link:");
+    const entry = lock.packages[`${name}@${pinned}`];
+    if (entry?.version !== undefined) return false; // a tarball, for a registry spec
+    if (!parse(pinned)) return true; // a workspace, which a plain spec may land on
+    if ((entry?.name ?? packageOf(entry?.resolved, pinned) ?? name) !== spec.fetchName) {
+      return false;
     }
     // As `pickManifest` picks: an exact version is one key, and `*` takes any tagged version.
     if (spec.type === "version") return parse(spec.fetchSpec)?.version === pinned;
@@ -384,6 +433,7 @@ function canonical(from: LockEntry): LockEntry {
   // every entry.
   const entry: LockEntry = {
     ...(from.version !== undefined && { version: from.version }),
+    ...(from.name !== undefined && { name: from.name }),
     ...(from.resolved !== undefined && { resolved: from.resolved }),
     integrity: from.integrity,
   };
@@ -446,8 +496,14 @@ function validate(value: unknown): Lockfile {
   const known = { ...lock.packages, ...workspaceKeys(lock) };
   for (const [key, entry] of Object.entries(lock.packages)) {
     const at = `packages[${JSON.stringify(key)}]`;
-    const { source } = splitKey(key);
+    const { name, source } = splitKey(key);
     if (!isObject(entry)) throw fail(`${at} must be an object`);
+    if (entry.name !== undefined) {
+      if (source !== undefined) throw fail(`${at}.name is only for an alias of a registry package`);
+      if (typeof entry.name !== "string" || entry.name === name || !isName(entry.name)) {
+        throw fail(`${at}.name must be the name of another package`);
+      }
+    }
     if (!entry.integrity || typeof entry.integrity !== "string") {
       throw fail(`${at}.integrity must be a non-empty string`);
     }
@@ -702,6 +758,15 @@ function splitKey(key: string): { name: string; version: string; source?: string
     throw fail(`package key "${key}" does not end in an exact version`);
   }
   return { name, version };
+}
+
+/** A registry package's name, as a key's half must be. */
+function isName(name: string): boolean {
+  try {
+    return parseDep(name, "*").type === "range";
+  } catch {
+    return false;
+  }
 }
 
 function stringMap(value: unknown, at: string): void {
