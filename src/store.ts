@@ -15,7 +15,7 @@ import {
 import type { Signal } from "./limit.ts";
 import { createWriter, SHARD_MIN, verifyTarball, wrapped } from "./unpack.ts";
 import { authFor } from "./registry.ts";
-import { concat, createHasher, iterate, sleep, toBase64 } from "./runtime.ts";
+import { concat, createHasher, hasNode, iterate, sleep, toBase64 } from "./runtime.ts";
 import { sameIntegrity } from "./integrity.ts";
 import { isIndex, now, sizeOfSync, tick, trace, tracing } from "./util.ts";
 
@@ -128,8 +128,15 @@ const BLOCK = 1024 * 1024;
  */
 const STREAM_MIN = SHARD_MIN;
 
-/** What a download came to: the bytes, or the index a worker is making of them as they land. */
-type Pulled = ({ bytes: Uint8Array[] } | { streamed: Promise<PackageIndex> }) & { size: number };
+/**
+ * What a download came to: the bytes, or the index a worker is making of them as they land.
+ * `unframed` bytes came with neither a length nor chunks, so only the connection's close ended
+ * them, and a close too early looks the same as the end.
+ */
+type Pulled = { size: number } & (
+  | { bytes: Uint8Array[]; unframed?: boolean }
+  | { streamed: Promise<PackageIndex> }
+);
 
 /** Asks the pool for a worker to stream a tarball of this many bytes to. */
 type Open = (size: number) => Promise<Sink | undefined>;
@@ -395,6 +402,7 @@ export function createStore(options: StoreOptions = {}): Store {
     integrity: string,
     repair: boolean,
     offer: boolean,
+    again = false,
   ): Promise<PackageIndex> {
     const open = offer
       ? async (size: number) => (pool ?? (await loadPool()))?.open(integrity, repair, size)
@@ -417,9 +425,19 @@ export function createStore(options: StoreOptions = {}): Store {
       const offered = ready?.offer(integrity, bytes, repair, behind);
       trace("offer", { i: integrity, behind, taken: !!offered });
       return await publish(integrity, await (offered ?? unpackHere(integrity, bytes, repair)));
+    } catch (error) {
+      if ((error as { code?: string }).code !== "EINTEGRITY") throw error;
+      // Cut short or not, nothing framed these bytes: they are worth one more download.
+      if (again || !("unframed" in pulled && pulled.unframed)) {
+        const where = typeof tarball === "string" ? tarball : tarball.path;
+        const message = `${where}: ${(error as Error).message} (${pulled.size} bytes)`;
+        throw Object.assign(new Error(message), { code: "EINTEGRITY", cause: error });
+      }
     } finally {
       unheld(pulled.size);
     }
+    trace("unframed", { i: integrity });
+    return await fill(tarball, integrity, repair, offer, true);
   }
 
   /**
@@ -428,8 +446,9 @@ export function createStore(options: StoreOptions = {}): Store {
    *
    * A busy server, a 5xx and a socket that died are all worth asking again about; a missing
    * tarball or a corrupt one is not, and asking twice would only turn a loud failure into a
-   * slow one. Back pressure is reported even when a later attempt succeeds, because from
-   * outside a retried request is indistinguishable from a slow one.
+   * slow one; bytes nothing framed are the exception, asked for once more by `fill`. Back
+   * pressure is reported even when a later attempt succeeds, because from outside a retried
+   * request is indistinguishable from a slow one.
    */
   async function pull(tarball: Tarball, signal: Signal, open?: Open): Promise<Pulled> {
     if (typeof tarball !== "string") {
@@ -551,7 +570,15 @@ export function createStore(options: StoreOptions = {}): Store {
       sink?.abort();
       throw error;
     }
-    return sink ? { streamed: sink.end(), size: got } : { bytes, size: got };
+    if (sink) return { streamed: sink.end(), size: got };
+    // Node's client shows the wire's headers; a browser's, or a `fetch` passed in, may not.
+    const said = response.headers;
+    const unframed =
+      hasNode &&
+      !options.fetch &&
+      said.get("content-length") === null &&
+      !/chunked/i.test(said.get("transfer-encoding") ?? "");
+    return { bytes, size: got, unframed };
   }
 
   const store: Store = {

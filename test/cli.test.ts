@@ -1211,11 +1211,12 @@ describe("startup budget", () => {
     // 153,423 with the engines warning; 153,855 naming the package.json fields not applied;
     // 153,974 with case-folded file names linked last-wins; 154,478 with a lockfile's urls off
     // its registries told; 154,685 with a registry that gives no publish dates told. 155,055 with a
-    // dropped optional asked for once more, `--help` and a no-op install within noise.
+    // dropped optional asked for once more, `--help` and a no-op install within noise; 155,463 with
+    // unframed tarball bytes asked for once more, the same.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(155_060);
+    expect(bytes).toBeLessThanOrEqual(155_470);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

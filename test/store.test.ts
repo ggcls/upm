@@ -368,6 +368,53 @@ describe("createStore", () => {
     expect(wrong.calls).toHaveLength(1);
   });
 
+  it("asks once more for bytes only the connection's close ended, and names the tarball", async () => {
+    // A body with a length or chunks that ends early fails as the network; one with neither
+    // ends at the close, so cut short it reaches the hash as other bytes.
+    const tarball = Buffer.from(
+      makeTarball([{ path: "a.js", data: randomBytes(4096).toString("base64") }]),
+    );
+    const hits: string[] = [];
+    let cut = 1;
+    const server = createServer((request, response) => {
+      const url = request.url ?? "";
+      hits.push(url);
+      if (url === "/framed.tgz") {
+        const other = Buffer.from(tarball);
+        other[other.length - 20]! ^= 1;
+        response.writeHead(200, { "content-length": String(other.length) });
+        response.end(other);
+        return;
+      }
+      const bytes = cut-- > 0 || url === "/cut.tgz" ? tarball.subarray(0, 100) : tarball;
+      response.socket!.end(Buffer.concat([Buffer.from("HTTP/1.1 200 OK\r\n\r\n"), bytes]));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const store = createStore({ dir, workers: 0 });
+      await store.add(`${base}/once.tgz`, hashOf(tarball));
+      expect(hits).toEqual(["/once.tgz", "/once.tgz"]);
+      // Cut short every time: once more, then the failure, naming what was fetched.
+      const other = createStore({ dir: join(dir, "other"), workers: 0 });
+      await expect(other.add(`${base}/cut.tgz`, hashOf(tarball))).rejects.toMatchObject({
+        code: "EINTEGRITY",
+        message: expect.stringMatching(
+          /^http:.*\/cut\.tgz: Integrity check failed.*\(100 bytes\)$/,
+        ),
+      });
+      expect(hits.filter((hit) => hit === "/cut.tgz")).toHaveLength(2);
+      // Other bytes of the length the server said are other bytes: not asked for again.
+      await expect(other.add(`${base}/framed.tgz`, hashOf(tarball))).rejects.toMatchObject({
+        code: "EINTEGRITY",
+      });
+      expect(hits.filter((hit) => hit === "/framed.tgz")).toHaveLength(1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("throws EINTEGRITY and leaves no index when the tarball does not match", async () => {
     const tarball = makeTarball([{ path: "a.js", data: "alpha" }]);
     const wrong = hashOf(Buffer.from("something else"));
