@@ -413,8 +413,8 @@ describe("createRegistryPool", () => {
     await ready(p);
     const cut = p.pick(parseSpec("slow@^1"));
     cut.catch(() => {});
-    await new Promise((done) => setTimeout(done, 100));
-    expect(hits.get("/slow")).toBe(1);
+    // The thread's request has landed: a busy machine can take far longer than a fixed wait.
+    await vi.waitFor(() => expect(hits.get("/slow")).toBe(1), { timeout: 5000, interval: 10 });
     p.close();
     // The walk that asked has failed and gone; a second request for it is one nobody reads,
     // and one that holds the process open for its retries.
