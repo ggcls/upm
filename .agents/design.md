@@ -146,6 +146,13 @@ the index would make an index over lost bytes more likely, not less. Power loss 
 an index over short blobs. Linking heals that: an entry whose files are short, over blobs
 that are short too, throws ELINK, and the install refills the store with sizes checked.
 
+A dropped optional is the one kind of short tree that state may certify, and it names what
+is `missing`. That applies only when asking again would not help: the tarball is gone (404),
+its bytes are not the pinned ones or not a tarball, it is another package's, or it failed
+again on the next install's one retry. Anything else leaves the tree incomplete, and the
+next install fills it again. Only `--verify` or a new resolution asks about a certified one
+again.
+
 ## Optimization must keep the same answer
 
 Metadata parsing shortcuts must select the real registry member, never a lookalike

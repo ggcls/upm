@@ -54,6 +54,11 @@ export interface LinkOptions {
    */
   awaiting?: (integrity: string) => Promise<unknown> | undefined;
   /**
+   * Optionals, by integrity, the fill could not get for a reason asking again would not change:
+   * a tree short of only these is recorded complete, so the next install is a no-op again.
+   */
+  final?: ReadonlySet<string>;
+  /**
    * `inputsHash` of this install, with what it will report, for the state file: the next
    * install with the same inputs then skips the graph.
    */
@@ -223,12 +228,18 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   // Each top's links and bins as they are made, for the state file's own up-to-date check.
   const made: Linked = Object.create(null); // a workspace may sit at `__proto__`
   const { inputs } = options;
-  const stateOf = (entries: string[], complete: boolean, { "": root, ...rest }: Linked) =>
+  const stateOf = (
+    entries: string[],
+    complete: boolean,
+    { "": root, ...rest }: Linked,
+    missing?: string[],
+  ) =>
     ({
       version: 1,
       hash,
       entries,
       complete,
+      ...(missing?.length && { missing }),
       store: builtin.path.resolve(store.dir),
       ...(production && { production: true as const }),
       ...(options.tarballs && { tarballs: options.tarballs }),
@@ -256,10 +267,11 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       const touched = JSON.stringify(state.tarballs) !== JSON.stringify(options.tarballs);
       const proven = JSON.stringify(state.workspaces) !== JSON.stringify(options.workspaces);
       if (learned || touched || proven) {
-        await writeState(options.dir, stateOf(state.entries, true, read));
+        await writeState(options.dir, stateOf(state.entries, true, read, state.missing));
       }
       trace("link:standing");
-      return { ...result, reused: state.entries.length, upToDate: true };
+      const dropped = state.missing ?? [];
+      return { ...result, reused: state.entries.length, upToDate: true, dropped };
     }
   }
   trace("link:standing");
@@ -315,6 +327,9 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   // one drops it the way a missing one does; a required one is read where it is linked, and
   // torn there fails the link, which the install answers by filling the store again.
   const fates = new Map<string, Promise<void>>();
+  // What was dropped, by integrity: asked of `final` only at the end, once the fill that
+  // failed each one has had its say.
+  const lacking: string[] = [];
   // Files landed so far that `.upm` lacks, under a filling store: their indexes were just
   // written, so reading one is a memo lookup. On a full store the count is taken only when the
   // pool asks for it, since it reads every index and a pool started off the lockfile never asks.
@@ -326,10 +341,11 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
         await options.awaiting?.(entry.pkg.integrity)?.catch(() => {});
         const { pkg } = entry;
         const bytes = store.indexSize(pkg.integrity);
-        // An optional the fetch step was allowed to drop is not linked, but the tree is then
-        // short of something the graph named, so it must not be recorded as complete.
+        // An optional the fetch step was allowed to drop is not linked. The tree is then short of
+        // something the graph named, recorded complete only when asking again would not help.
         if (bytes === 0 || (pkg.optional && !store.index(pkg.integrity))) {
           if (!pkg.optional) throw fail(`${id} is not in the store at ${store.dir}`, "ELINK");
+          lacking.push(pkg.integrity);
           result.dropped.push(id);
           wanted.delete(id);
           return;
@@ -411,8 +427,9 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
     options.dir,
     stateOf(
       [...new Set([...wanted.values()].map((entry) => entry.key))].sort(),
-      result.dropped.length === 0,
+      lacking.every((integrity) => options.final?.has(integrity)),
       made,
+      result.dropped,
     ),
   );
   trace("link:statewritten");

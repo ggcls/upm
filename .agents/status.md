@@ -56,11 +56,6 @@ compatibility. Keep this page about open work, not completed implementation step
   is dropped as a missing one is. A targeted repair (refetch the one integrity the failure
   names, link again) would keep the fast fill and the fast repair. Start at `installTree`'s
   `ELINK` catch in `src/api.ts`.
-- **A dropped optional is never retried while the graph stands:** `settled` in
-  `installTree` (`src/api.ts`) compares the state's `hash` alone, not `state.complete`, so an
-  optional package dropped by a transient tarball failure is not fetched again until the
-  resolution changes. The fix is to refill when the state says the tree is incomplete; test
-  with a tarball that fails once and is served the next time.
 - **A url tarball changed in place is not picked up:** the lockfile pins its bytes, so a
   server that now serves others fails the install with `EINTEGRITY` naming the source (`stale`
   in `src/api.ts`); the way out is remove and add. A local one is read again (`movedTarballs`).

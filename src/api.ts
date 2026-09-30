@@ -588,7 +588,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
         workspaces: project.workspaces.length,
         otherPlatforms,
         upToDate: true,
-        missingOptional: [],
+        missingOptional: state.missing ?? [],
         stats: { ...NOTHING, reused: state.entries.length },
       };
     }
@@ -644,13 +644,19 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
     store: store.dir,
     hoist,
   });
-  const settled = state?.hash === hash;
+  // A tree short of an optional a retry could still get is filled again; offline, it cannot be.
+  const settled = state?.hash === hash && (state.complete || settings(ctx).offline === true);
   trace("hash");
   // Before the tree changes, so a failed link cannot leave the old copy behind it.
   if (!settled && lockSource(ctx, dir).foreign) {
     await builtin.fsp.rm(treeLockPath(dir), { force: true });
   }
 
+  // Optionals not asked for again while the graph stands: gone, other bytes than pinned, not a
+  // tarball, another package's, or failed twice.
+  // Once, so a host that stays down costs one more install its retries, not every one.
+  const again = state?.hash === hash;
+  const final = new Set<string>();
   const fill = async (into: Store): Promise<void> => {
     // A skipped optional leaves the total, so a finished fill reads as done.
     let fetched = 0;
@@ -667,9 +673,12 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
           if (!pkg.optional && pkg.source !== undefined) {
             throw (await import("./tarball-deps.ts")).stale(error, pkg.source);
           }
-          // Offline, a missing optional fails too: skipped, it would not be fetched again until
-          // the resolution changes.
-          if (!pkg.optional || (error as { code?: string }).code === "EOFFLINE") throw error;
+          // Offline, a missing optional fails too, rather than leave the tree short of it.
+          const { code } = error as { code?: string };
+          if (!pkg.optional || code === "EOFFLINE") throw error;
+          if (again || ["E404", "EINTEGRITY", "EBADTAR", "EMISMATCH"].includes(code!)) {
+            final.add(pkg.integrity);
+          }
           log(`skipped optional ${pkg.name}@${pkg.version}: ${describe(error)}`, "warn");
           total--;
           tell();
@@ -710,6 +719,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
     hash,
     pool: pool?.ask,
     awaiting: filling && store.pending,
+    final,
     onProgress: progress,
     inputs:
       inputs === undefined

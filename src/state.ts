@@ -18,8 +18,14 @@ export interface InstallState {
   hash: string;
   /** Sorted store keys that should exist under `node_modules/.upm`. */
   entries: string[];
-  /** False when something the graph named could not be linked, so a check must run again. */
+  /**
+   * False when something the graph named could not be linked and asking again may get it, so
+   * the next install fills again. An optional the registry lacks, or holds other bytes of, is
+   * not asked for again while the graph stands: it is only `missing`.
+   */
   complete: boolean;
+  /** The optionals the graph named and the tree lacks, as the install reported them. */
+  missing?: string[];
   /** Absolute path of the content store this tree was linked from. */
   store: string;
   /** Linked under `production`, so an install on its own behalf (`run`'s) keeps it that way. */
@@ -238,6 +244,8 @@ function isState(value: unknown): value is InstallState {
     typeof state.complete === "boolean" &&
     Array.isArray(state.entries) &&
     state.entries.every((entry) => typeof entry === "string") &&
+    (state.missing === undefined ||
+      (Array.isArray(state.missing) && state.missing.every((id) => typeof id === "string"))) &&
     (state.inputs === undefined ||
       (typeof state.inputs === "string" &&
         typeof state.summary?.packages === "number" &&

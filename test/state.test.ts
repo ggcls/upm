@@ -197,6 +197,16 @@ describe("readState", () => {
     }
   });
 
+  it("reads the optionals the tree lacks, and refuses a list that is not one", async () => {
+    const state = { version: 1, hash: "a", entries: [], complete: true, store: STORE };
+    await put(JSON.stringify({ ...state, missing: ["opt@1.0.0"] }));
+    expect(await readState(project)).toEqual({ ...state, missing: ["opt@1.0.0"] });
+    for (const bad of ["opt@1.0.0", [1], {}]) {
+      await put(JSON.stringify({ ...state, missing: bad }));
+      expect(await readState(project), JSON.stringify(bad)).toBeUndefined();
+    }
+  });
+
   it("is undefined when the file predates the complete flag", async () => {
     // An older state cannot say whether its tree was whole, so it must not be trusted.
     await put(JSON.stringify({ version: 1, hash: "a", entries: [], store: STORE }));

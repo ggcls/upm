@@ -40,6 +40,8 @@ let files: Record<string, Uint8Array>;
 let served: string[];
 /** Documents served by path besides `nanoid`'s. */
 let docs: Record<string, object>;
+/** Paths answered 429 with a short Retry-After, as a registry too busy for them. */
+let busy: Set<string>;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "upm-api-"));
@@ -47,11 +49,18 @@ beforeEach(async () => {
   files = {};
   served = [];
   docs = {};
+  busy = new Set();
   server = createServer((request, response) => {
     const url = request.url ?? "";
     if (Object.hasOwn(docs, url)) {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(docs[url]));
+      return;
+    }
+    if (busy.has(url)) {
+      served.push(url);
+      response.writeHead(429, { "retry-after": "0.01" });
+      response.end();
       return;
     }
     if (Object.hasOwn(files, url)) {
@@ -1059,6 +1068,76 @@ describe("tarball dependencies", () => {
     const last = (phase: string) => seen.filter((p) => p.phase === phase).at(-1);
     expect(last("fetch")).toEqual({ phase: "fetch", done: 1, total: 1 });
     expect(last("link")).toEqual({ phase: "link", done: 1, total: 1 });
+  });
+
+  describe("an optional whose download failed", () => {
+    const path = "/files/opt-1.0.0.tgz";
+    const nm = () => join(dir, "node_modules");
+    const state = async () => await readJson(join(nm(), ".upm.json"));
+    let fresh: upm.InstallOptions;
+    const asked = () => served.filter((url) => url === path).length;
+
+    beforeEach(async () => {
+      const opt = '{"name":"opt","version":"1.0.0"}';
+      files[path] = makeTarball([{ path: "package.json", data: opt }]);
+      const optionalDependencies = { opt: `${registry()}${path}` };
+      const manifest = { dependencies: { nanoid: "^5" }, optionalDependencies };
+      await writeFile(join(dir, "package.json"), JSON.stringify(manifest));
+      await upm.lock(base);
+      // Locked, so a fresh store has to download it.
+      fresh = { ...base, store: join(dir, "fresh") };
+    });
+
+    it("is fetched again by the next install once the registry answers", async () => {
+      busy.add(path);
+      expect((await upm.install(fresh)).missingOptional).toEqual([`opt@${registry()}${path}`]);
+      expect((await state()).complete).toBe(false);
+      busy.delete(path);
+      expect(await upm.install(fresh)).toMatchObject({ upToDate: false, missingOptional: [] });
+      expect(await readFile(join(nm(), "opt", "package.json"), "utf8")).toContain('"opt"');
+      expect(await upm.install(fresh)).toMatchObject({ upToDate: true, missingOptional: [] });
+    });
+
+    it.each([
+      ["gone", () => delete files[path]],
+      ["other bytes", () => (files[path] = makeTarball([{ path: "index.js", data: "other" }]))],
+    ])(
+      "is not asked for again when it is %s, and the tree is up to date without it",
+      async (_, change) => {
+        change();
+        const id = `opt@${registry()}${path}`;
+        expect((await upm.install(fresh)).missingOptional).toEqual([id]);
+        const before = served.length;
+        expect(await upm.install(fresh)).toMatchObject({ upToDate: true, missingOptional: [id] });
+        expect(served).toHaveLength(before);
+      },
+    );
+
+    it("is asked for once more when the registry stays busy, then left out", async () => {
+      busy.add(path);
+      const locked = asked();
+      await upm.install(fresh);
+      const tries = asked() - locked;
+      expect(tries).toBeGreaterThan(1); // retried within the install
+      expect(await upm.install(fresh)).toMatchObject({ upToDate: false });
+      expect(asked() - locked).toBe(tries * 2);
+      const id = `opt@${registry()}${path}`;
+      expect(await upm.install(fresh)).toMatchObject({ upToDate: true, missingOptional: [id] });
+      expect(asked() - locked).toBe(tries * 2);
+    });
+
+    it("is not asked for offline, and the offline install still links the rest", async () => {
+      busy.add(path);
+      await upm.install(fresh);
+      busy.delete(path);
+      const before = served.length;
+      await rm(join(nm(), "nanoid"), { recursive: true });
+      expect(await upm.install({ ...fresh, offline: true })).toMatchObject({ upToDate: false });
+      expect(served).toHaveLength(before);
+      expect(await readFile(join(nm(), "nanoid", "index.js"), "utf8")).toContain("nanoid");
+      // Back online, the tree is still short of it, so it is asked for.
+      expect(await upm.install(fresh)).toMatchObject({ missingOptional: [] });
+    });
   });
 
   describe("a local tarball changed in place", () => {
