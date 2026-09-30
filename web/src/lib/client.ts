@@ -11,6 +11,7 @@ import {
   type ResolvedPackage,
 } from "upm/resolver";
 import { createVerifier } from "upm/src/integrity.ts";
+import { integrityOf } from "upm/src/resolve.ts";
 import { extractTar, type TarEntry } from "upm/src/tar.ts";
 import { storedFiles } from "./install.ts";
 import { cachedFetch } from "./opfs.ts";
@@ -40,7 +41,6 @@ export type FullManifest = Manifest & {
   repository?: string | { url?: string; directory?: string };
   /** The commit it was published from: the registry's copy has it, the tarball's does not. */
   gitHead?: string;
-  keywords?: string[];
 };
 
 export interface Resolved {
@@ -49,18 +49,30 @@ export interface Resolved {
   ms: number;
 }
 
+/** The version the spec picks, as the resolver would record it. */
+export type Top = Pick<
+  ResolvedPackage,
+  "name" | "version" | "resolved" | "integrity" | "dependencies"
+>;
+
 /**
- * One query, as independent promises so each part shows the moment it lands. `top` settles on
- * the resolver's first pick; the manifest and the tarball start from it, alongside the walk.
+ * One query, as independent promises so each part shows the moment it lands. `top` is the
+ * spec's pick; the manifest and the tarball start from it. The tree waits for `resolve`.
  */
 export interface Run {
   name: string;
   /** The root's dependencies: what the resolve walks, and what an install installs. */
   dependencies: Record<string, string>;
-  top: Promise<ResolvedPackage>;
+  top: Promise<Top>;
   manifest: Promise<FullManifest>;
   tarball: Promise<Tarball>;
-  resolved: Promise<Resolved>;
+  /**
+   * The package's `README.md`, as soon as the tarball's stream yields it, before the rest lands
+   * and before its integrity is checked. Undefined when the tarball has none.
+   */
+  readme: Promise<TarEntry | undefined>;
+  /** Walks the whole tree, on the first call; later calls get the same walk. */
+  resolve(onPick: (pkg: ResolvedPackage, from: string, size?: Size) => void): Promise<Resolved>;
 }
 
 export interface Tarball {
@@ -84,11 +96,7 @@ export interface Client {
   registry: Registry;
   requests: RequestEntry[];
   /** `after`: when to start; the parts stay pending until then. */
-  run(
-    spec: string,
-    onPick: (pkg: ResolvedPackage, from: string, size?: Size) => void,
-    after?: Promise<unknown>,
-  ): Run;
+  run(spec: string, after?: Promise<unknown>): Run;
 }
 
 /** A client whose every request lands in `requests`, `onChange` told of each move. */
@@ -167,7 +175,7 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
     registry,
     requests,
 
-    run(raw, onPick, after) {
+    run(raw, after) {
       const spec = parseSpec(raw.trim());
       if (spec.type === "workspace" || spec.type === "tarball") {
         throw new Error(`Only registry specs here, not ${spec.type}: ${raw}`);
@@ -175,31 +183,30 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
       const range =
         spec.name === spec.fetchName ? spec.fetchSpec : `npm:${spec.fetchName}@${spec.fetchSpec}`;
       const dependencies = { [spec.name]: range };
-      let picked!: (pkg: ResolvedPackage) => void;
-      let failed!: (error: unknown) => void;
-      const top = new Promise<ResolvedPackage>((ok, fail) => {
-        picked = ok;
-        failed = fail;
-      });
-      const resolved = (async () => {
+      // One pick, as the walk's first: the walk finds its document already read.
+      const top = (async (): Promise<Top> => {
         await after;
-        const start = performance.now();
-        const resolution = await resolveTree(
-          { name: "project", version: "0.0.0", dependencies },
-          {
-            registry,
-            onPick(pkg, from) {
-              if (from === "") picked(pkg);
-              onPick(pkg, from, sizes.get(pkg.resolved));
-            },
-          },
-        );
-        const ms = performance.now() - start;
-        const lockfile = formatLockfile(toLockfile(resolution, registry.baseFor));
-        return { resolution, ms, lockfile };
+        const m = await registry.pick!(spec);
+        return {
+          name: spec.name,
+          version: m.version,
+          resolved: m.dist.tarball,
+          integrity: integrityOf(m),
+          dependencies: m.dependencies ?? {},
+        };
       })();
-      // A walk that fails before its first pick fails the rest with it; after, this is a no-op.
-      resolved.catch(failed);
+      let resolved: Promise<Resolved> | undefined;
+      const resolve: Run["resolve"] = (onPick) =>
+        (resolved ??= (async () => {
+          const start = performance.now();
+          const resolution = await resolveTree(
+            { name: "project", version: "0.0.0", dependencies },
+            { registry, onPick: (pkg, from) => onPick(pkg, from, sizes.get(pkg.resolved)) },
+          );
+          const ms = performance.now() - start;
+          const lockfile = formatLockfile(toLockfile(resolution, registry.baseFor));
+          return { resolution, ms, lockfile };
+        })());
       // What an earlier install left in the store answers both, with no request.
       const stored = top.then((pkg) => (pkg.integrity ? storedFiles(pkg.integrity) : undefined));
       // The record's name is what it installs as; an alias is asked for by its real name.
@@ -210,9 +217,20 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
           (registry.manifest(spec.fetchName, pkg.version) as Promise<FullManifest>)
         );
       });
-      const tarball = top.then((pkg) => fetchTarball(pkg.resolved, pkg.integrity, stored));
-      for (const promise of [top, stored, manifest, tarball, resolved]) promise.catch(() => {});
-      return { name: spec.name, dependencies, top, manifest, tarball, resolved };
+      // npm packs the README near the start, so it shows well before a large tarball is in.
+      let found!: (entry: TarEntry | undefined) => void;
+      const readme = new Promise<TarEntry | undefined>((resolve) => (found = resolve));
+      const tarball = top.then((pkg) =>
+        fetchTarball(pkg.resolved, pkg.integrity, stored, (entry) => {
+          if (/^readme\.(md|markdown)$/i.test(entry.path)) found(entry);
+        }),
+      );
+      tarball.then(
+        () => found(undefined),
+        () => found(undefined),
+      );
+      for (const promise of [top, stored, manifest, tarball]) promise.catch(() => {});
+      return { name: spec.name, dependencies, top, manifest, tarball, readme, resolve };
     },
   };
 
@@ -244,6 +262,7 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
     url: string,
     integrity: string,
     fromStore: Promise<TarEntry[] | undefined>,
+    onEntry: (entry: TarEntry) => void,
   ): Promise<Tarball> {
     if (!integrity) throw new Error(`${url} has no integrity`);
     const start = performance.now();
@@ -277,7 +296,10 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
       for (let chunk = await read(); chunk; chunk = await read()) yield chunk;
     }
     const files: TarEntry[] = [];
-    for await (const entry of extractTar(body())) files.push(entry);
+    for await (const entry of extractTar(body())) {
+      files.push(entry);
+      onEntry(entry);
+    }
     // The archive can end before the bytes do; the integrity covers them all.
     while (await read());
     await verifier.verify();

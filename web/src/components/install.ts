@@ -9,8 +9,6 @@ const COPY = {
   paths: `<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>`,
 };
 const CHECK = { className: "size-3.5", paths: `<path d="M20 6 9 17l-5-5"/>` };
-// The hexagon from bench/icons.ts, in Node's green.
-const NODE = `<svg viewBox="0 0 27.713 32" fill="#5fa04e" aria-hidden="true" class="mb-0.5 inline size-3.5"><path d="M11.691 1.25Q13.856 0 16.021 1.25L25.548 6.75Q27.713 8 27.713 10.5L27.713 21.5Q27.713 24 25.548 25.25L16.021 30.75Q13.856 32 11.691 30.75L2.165 25.25Q0 24 0 21.5L0 10.5Q0 8 2.165 6.75Z"/></svg>`;
 
 const escape = (text: string) => text.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -52,9 +50,7 @@ function installer(bare = false) {
 </div>`;
 }
 
-const NPMRC = `<code class="rounded bg-zinc-100 px-1 py-0.5 font-mono text-xs text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">.npmrc</code>`;
 const KB = `<strong class="font-semibold text-amber-600 dark:text-amber-400">~256 KB</strong>`;
-const NOTE = `<p class="text-sm text-zinc-500">Works with ${NODE} Node.js, your existing ${NPMRC} and npm, pnpm or bun lockfiles. Takes ${KB} of disk space (85 KB packed).</p>`;
 
 /**
  * The card: "Install upm" over a terminal. With `spec`, it has no title or frame, and a second command
@@ -62,10 +58,9 @@ const NOTE = `<p class="text-sm text-zinc-500">Works with ${NODE} Node.js, your 
  */
 export function installCard(className = "", spec?: string) {
   if (spec) {
-    return `<aside class="${className} space-y-3 border-b border-zinc-200 pb-5 dark:border-zinc-800">
+    return `<aside class="${className} space-y-3">
   ${installer()}
   ${command(`upm add ${spec}`)}
-  ${NOTE}
 </aside>`;
   }
   return `<aside class="${className}">

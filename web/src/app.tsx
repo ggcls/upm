@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ResolvedPackage } from "upm/resolver";
 import { runsOn } from "upm/src/resolve.ts";
+import type { TarEntry } from "upm/src/tar.ts";
 import {
   createClient,
   DEFAULT_REGISTRY,
@@ -10,6 +11,7 @@ import {
   type Resolved,
   type Size,
   type Tarball,
+  type Top,
 } from "./lib/client.ts";
 import { Dependencies, type Picks } from "./components/deps.tsx";
 import { Breadcrumb, Editor } from "./components/editor.tsx";
@@ -23,7 +25,6 @@ import {
   type Installed,
   type InstalledFile,
 } from "./lib/install.ts";
-import { Package } from "./components/package.tsx";
 import { Panel, type PanelTab, type Problem } from "./components/panel.tsx";
 import { EXAMPLES, pathOf, specOf } from "./lib/route.ts";
 import { StatusBar } from "./components/statusbar.tsx";
@@ -43,9 +44,13 @@ export interface View {
   spec: string;
   name: string;
   started: number;
-  top?: ResolvedPackage | Error;
+  top?: Top | Error;
   manifest?: FullManifest | Error;
   tarball?: Tarball | Error;
+  /** The README, out of the tarball's stream while the rest still downloads. */
+  readme?: TarEntry;
+  /** The Install button was pressed: the tree's walk, then upm's install, are under way. */
+  requested?: boolean;
   resolved?: Resolved | Error;
   /** What the resolve installs: set once the run starts. */
   dependencies?: Record<string, string>;
@@ -68,7 +73,8 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   const [panel, setPanel] = useState<PanelTab>();
   // Once the panel was opened or closed, it stays as left. A small screen can't spare the room.
   const panelSet = useRef(narrow());
-  const [sidebar, setSidebar] = useState(true);
+  // A small screen opens on the README: the sidebar waits for the Install button.
+  const [sidebar, setSidebar] = useState(() => !narrow());
   const [breadcrumb, setBreadcrumb] = useState<HTMLElement | null>(null);
   // A breadcrumb part to show in the Explorer; a new object each click, so the same one repeats.
   const [reveal, setReveal] = useState<{ path: string }>();
@@ -81,15 +87,23 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   /** The last install that finished, shown while a reinstall of the same run is under way. */
   const last = useRef<{ id: number; installed: Installed }>(undefined);
   const run = useRef(0);
+  /** Starts the current run's resolve and install: the Install button. */
+  const startInstall = useRef<() => void>(() => {});
 
   // Many requests and picks move per frame; draw at most once a frame.
   const redraw = useThrottledRedraw(() => setTick((n) => n + 1));
 
-  function submit(raw = spec, registry = registryUrl, after?: Promise<unknown>) {
+  /** A run fetches the package alone; `andInstall` presses the Install button with it. */
+  function submit(
+    raw = spec,
+    registry = registryUrl,
+    after?: Promise<unknown>,
+    andInstall = false,
+  ) {
     if (!raw.trim()) return;
     setSpec(raw);
     history.replaceState(null, "", pathOf(raw.trim()));
-    // The README opens once the tarball lands: load its renderer alongside.
+    // The README opens as soon as the tarball's stream yields it: load its renderer alongside.
     void loadMarkdown().catch(() => {});
     const id = ++run.current;
     const next = createClient(registry, redraw);
@@ -106,17 +120,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         (error: Error) => update({ [key]: error }),
       );
     try {
-      const query = next.run(
-        raw,
-        (pkg, from, size) => {
-          if (size) sizes.push({ pkg, size });
-          const list = live.get(from) ?? [];
-          list.push({ name: pkg.name, version: pkg.source ?? pkg.version, optional: pkg.optional });
-          live.set(from, list);
-          redraw();
-        },
-        after,
-      );
+      const query = next.run(raw, after);
       setView({
         id,
         spec: raw,
@@ -127,28 +131,55 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
       setSelected(treePath(query.name, "package.json"));
       settle("top", query.top);
       settle("manifest", query.manifest);
-      // Open the README once the files are in, unless another file was picked meanwhile. Set in
-      // the same callback as the tarball, so the tree mounts with it already selected.
+      // Open the README once it is in, unless another file was picked meanwhile. Set in the same
+      // callback as the file, so the tree mounts with it already selected.
+      const first = treePath(query.name, "package.json");
+      query.readme.then((readme) => {
+        if (!readme || run.current !== id) return;
+        setSelected((now) => (now === first ? treePath(query.name, readme.path) : now));
+        update({ readme });
+      });
       query.tarball.then(
         (tarball) => {
           if (run.current !== id) return;
           const readme = readmeOf(tarball.files.map((f) => f.path));
           if (readme) {
-            const first = treePath(query.name, "package.json");
             setSelected((now) => (now === first ? treePath(query.name, readme) : now));
           }
           update({ tarball });
         },
         (error: Error) => update({ tarball: error }),
       );
-      settle("resolved", query.resolved);
-      // Then upm installs it, which finds the registry's answers in the HTTP cache.
-      // Not for a run already replaced: in dev, StrictMode starts each run twice.
-      query.resolved.then(
-        (resolved) =>
-          run.current === id && install(id, query.dependencies, registry, resolved.lockfile),
-        () => {},
-      );
+      let started = false;
+      startInstall.current = () => {
+        if (run.current !== id || started) return;
+        started = true;
+        update({ requested: true });
+        const resolved = query.resolve((pkg, from, size) => {
+          if (size) sizes.push({ pkg, size });
+          const list = live.get(from) ?? [];
+          list.push({ name: pkg.name, version: pkg.source ?? pkg.version, optional: pkg.optional });
+          live.set(from, list);
+          redraw();
+        });
+        settle("resolved", resolved);
+        // Then upm installs it, which finds the registry's answers in the HTTP cache.
+        // Not for a run already replaced: in dev, StrictMode starts each run twice.
+        resolved.then(
+          (done) => run.current === id && install(id, query.dependencies, registry, done.lockfile),
+          () => {},
+        );
+      };
+      if (andInstall) startInstall.current();
+      else if (!narrow()) {
+        // A wide screen presses Install itself once the README (or the tarball, without one) has
+        // painted, so the walk's requests don't hold it back. A small one waits for the button.
+        const start = startInstall.current;
+        Promise.all([query.top, query.readme, loadMarkdown().catch(() => {})]).then(
+          () => requestAnimationFrame(() => setTimeout(start)),
+          () => {},
+        );
+      }
     } catch (error) {
       setView({ id, spec: raw, name: raw, started: performance.now(), top: error as Error });
     }
@@ -225,6 +256,8 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   const requests = client?.requests ?? [];
   const picked = [...picks.current.values()].reduce((sum, list) => sum + list.length, 0);
   const tarball = view?.tarball instanceof Error ? undefined : view?.tarball;
+  // Until the tarball lands; a tarball that fails its check takes it back.
+  const readme = view?.tarball === undefined ? view?.readme : undefined;
   const name = view?.name ?? "";
   const installed =
     view?.installed === true && last.current?.id === view.id
@@ -239,9 +272,11 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     if (installed) return installed.files;
     if (!dependencies) return undefined;
     const early = new Map<string, InstalledFile>([["package.json", manifestOf(dependencies)]]);
-    for (const file of tarball?.files ?? []) early.set(treePath(name, file.path), file);
+    for (const file of tarball?.files ?? (readme ? [readme] : [])) {
+      early.set(treePath(name, file.path), file);
+    }
     return early;
-  }, [tarball, name, installed, dependencies]);
+  }, [tarball, readme, name, installed, dependencies]);
   // Until the install lands, what the registry says it will write here. A libc read that lands
   // later drops a pick, so it is summed again each draw.
   const estimate =
@@ -249,7 +284,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   // upm's own counts, as the CLI's bar draws them, on the install's clock. Pending while there
   // is nothing to count yet: the resolve, and the install's first downloads.
   const busy =
-    !!view &&
+    !!view?.requested &&
     !(view.top instanceof Error || view.resolved instanceof Error) &&
     (view.installed === undefined || view.installed === true);
   const progress = busy ? progressOf(view.installed === true) : undefined;
@@ -267,6 +302,18 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [hasEntries]);
 
+  /** A fresh run of the same spec that installs right away. */
+  const reinstall = () => {
+    if (!view) return;
+    submit(view.spec, registryUrl, undefined, true);
+    setSidebar(true);
+  };
+  /** The Install button: the sidebar shows the tree as it comes in. */
+  const installNow = () => {
+    startInstall.current();
+    setSidebar(true);
+  };
+
   const choosePanel = (tab: PanelTab | undefined) => {
     panelSet.current = true;
     setPanel(tab);
@@ -283,14 +330,13 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         view={view}
       />
 
-      {/* Margins grow with the page; the sidebar floats on the left at full height, the editor
-          runs to the right edge and the panel sits below it. */}
-      <div className="relative flex min-h-0 flex-1 pb-3 max-sm:flex-col">
+      {/* Margins grow with the page; the sidebar floats on the right at full height, the editor
+          runs to the left edge and the panel sits below it. */}
+      <div className="relative flex min-h-0 flex-1 pb-3 max-sm:flex-col sm:flex-row-reverse">
         <Sidebar
           reveal={reveal}
           open={sidebar}
           setOpen={setSidebar}
-          count={view && !view.resolved ? picked : undefined}
           explorer={
             <Explorer
               view={view}
@@ -301,6 +347,8 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
               picked={picked}
               selected={selected}
               reveal={reveal}
+              onInstall={installNow}
+              onReinstall={reinstall}
               onSelect={(path) => {
                 setSelected(path);
                 // On a small screen the sidebar floats over the editor: get it out of the way.
@@ -308,10 +356,10 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
               }}
             />
           }
-          package={<Package view={view} />}
           dependencies={
             <Dependencies
-              started={!!view}
+              view={view}
+              onInstall={installNow}
               picks={picks.current}
               picked={picked}
               resolved={view?.resolved}
@@ -320,7 +368,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         />
 
         {/* The breadcrumb and the panel float over the editor's ends, which scroll under them. */}
-        <div ref={column} className="relative min-h-0 min-w-0 flex-1 max-sm:ml-3">
+        <div ref={column} className="relative min-h-0 min-w-0 flex-1 max-sm:mr-3">
           <main className="h-full">
             <Breadcrumb
               value={{
@@ -343,6 +391,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
                 starting={shared}
                 examples={EXAMPLES}
                 onRun={submit}
+                onInstall={installNow}
               />
             </Breadcrumb>
           </main>

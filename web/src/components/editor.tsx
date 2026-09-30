@@ -13,14 +13,15 @@ import type { View } from "../app.tsx";
 import { Code, formatBytes, preview } from "./code.tsx";
 import { LOCK, treePath } from "./files.tsx";
 import { bindInstall, installCard } from "./install.ts";
+import { InstallButton } from "./install-button.tsx";
 import type { InstalledFile } from "../lib/install.ts";
 import { toBase64 } from "upm/src/runtime.ts";
 import { Markdown, MarkdownSkeleton, type Link } from "./markdown.tsx";
-import { sourceUrl } from "./package.tsx";
+import { PackageMeta, sourceUrl } from "./package.tsx";
 import { ErrorBox, IconButton, Icon, Waiting } from "./ui.tsx";
 
-/** Where the open file's breadcrumb goes (floating over the top of the editor), and what a click
- * on one of its parts does. */
+/** Where the open file's breadcrumb goes (floating over the top of the editor, unless it sits
+ * above rendered Markdown), and what a click on one of its parts does. */
 export const Breadcrumb = createContext<{
   slot: HTMLElement | null;
   reveal: (path: string) => void;
@@ -37,6 +38,7 @@ export function Editor(props: {
   starting?: boolean;
   examples: string[];
   onRun: (spec: string) => void;
+  onInstall: () => void;
 }) {
   const { view, files, selected, picked } = props;
   if (!view && props.starting) return <MarkdownSkeleton />;
@@ -56,14 +58,24 @@ export function Editor(props: {
     const manifest = view.manifest instanceof Error ? undefined : view.manifest;
     const root = treePath(view.name);
     const own = selected.startsWith(root);
-    // The package's own README opens with how to install upm, and it.
+    // The package's own README opens with its details, how to install upm and it, and, until
+    // the install is asked for, the Install button.
     const readme = own && /^readme\.(md|markdown)$/i.test(selected.slice(root.length));
     return (
       <FileView
         path={selected}
         file={file}
         files={files}
-        install={readme ? view.name : undefined}
+        install={
+          readme && (
+            <InstallCard
+              spec={view.name}
+              meta={<PackageMeta view={view} onInstall={props.onInstall} />}
+            >
+              <InstallButton view={view} onInstall={props.onInstall} />
+            </InstallCard>
+          )
+        }
         repo={own ? sourceUrl(manifest) : undefined}
         root={root}
       />
@@ -95,8 +107,8 @@ function FileView(props: {
   path: string;
   file: InstalledFile;
   files: Map<string, InstalledFile>;
-  /** Shows the install card above the rendered Markdown, with a command to add this package. */
-  install?: string;
+  /** Shown above the rendered Markdown. */
+  install?: ReactNode;
   /** The package's folder in its repository, for what its tarball leaves out. */
   repo?: string;
   /** The package's tree path, where `repo` begins. */
@@ -121,8 +133,8 @@ function FileView(props: {
     },
     [path, files, repo, root],
   );
-  return (
-    <Frame
+  const crumbs = (
+    <Crumbs
       path={path}
       meta={
         file.link === undefined
@@ -140,30 +152,63 @@ function FileView(props: {
           </IconButton>
         )
       }
-    >
-      {markdown && !source ? (
-        <Markdown text={shown.text} link={link} onOpen={open}>
-          {props.install && <InstallCard spec={props.install} />}
-        </Markdown>
-      ) : (
-        <Code {...shown} />
-      )}
+    />
+  );
+  // Rendered Markdown holds its breadcrumb above the article, in the same scroll.
+  if (markdown && !source) {
+    return (
+      <Markdown text={shown.text} link={link} onOpen={open}>
+        {props.install}
+        <div className="mx-auto max-w-[860px] px-4 pt-4 first:pt-8 sm:px-8">{crumbs}</div>
+      </Markdown>
+    );
+  }
+  return (
+    <Frame crumbs={crumbs}>
+      <Code {...shown} />
     </Frame>
   );
 }
 
-/** The command that adds this package, as wide as the README under it. */
-function InstallCard({ spec }: { spec: string }) {
+/**
+ * `meta`, then `children` beside a button that shows the commands that install upm and add this
+ * package, as wide as the README under it.
+ */
+function InstallCard(props: { spec: string; meta: ReactNode; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(commandsOpen);
   useEffect(() => bindInstall(ref.current!), []);
   return (
-    <div
-      ref={ref}
-      className="mx-auto max-w-[860px] px-4 pt-8 sm:px-8"
-      dangerouslySetInnerHTML={{ __html: installCard("", spec) }}
-    />
+    <div className="mx-auto max-w-[860px] px-4 pt-8 sm:px-8">
+      <div className="space-y-4 border-b border-zinc-200 pb-5 dark:border-zinc-800">
+        {props.meta}
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+          {props.children}
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((commandsOpen = !open))}
+            className="flex shrink-0 items-center gap-1 text-sm text-zinc-500 transition-colors hover:text-amber-600 dark:text-zinc-400 dark:hover:text-amber-500"
+          >
+            Install with upm
+            <Icon
+              name="chevron"
+              className={`size-3.5 text-zinc-400 transition-transform ${open ? "-rotate-90" : "rotate-90"}`}
+            />
+          </button>
+        </div>
+        <div
+          ref={ref}
+          hidden={!open}
+          dangerouslySetInnerHTML={{ __html: installCard("", props.spec) }}
+        />
+      </div>
+    </div>
   );
 }
+
+// Whether the commands to install upm and add the package show, kept for the next package.
+let commandsOpen = false;
 
 function Lockfile({ resolved, picked }: { resolved: View["resolved"]; picked: number }) {
   const [copied, setCopied] = useState(false);
@@ -178,35 +223,39 @@ function Lockfile({ resolved, picked }: { resolved: View["resolved"]; picked: nu
   const text = resolved.lockfile;
   return (
     <Frame
-      path={LOCK}
-      meta={`${formatBytes(text.length)} · json`}
-      actions={
-        <>
-          <IconButton
-            icon="copy"
-            title="Copy"
-            onClick={() => {
-              void navigator.clipboard.writeText(text);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1200);
-            }}
-          >
-            {copied ? "copied" : "copy"}
-          </IconButton>
-          <IconButton
-            icon="download"
-            title="Download"
-            onClick={() => {
-              const a = document.createElement("a");
-              a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
-              a.download = LOCK;
-              a.click();
-              URL.revokeObjectURL(a.href);
-            }}
-          >
-            download
-          </IconButton>
-        </>
+      crumbs={
+        <Crumbs
+          path={LOCK}
+          meta={`${formatBytes(text.length)} · json`}
+          actions={
+            <>
+              <IconButton
+                icon="copy"
+                title="Copy"
+                onClick={() => {
+                  void navigator.clipboard.writeText(text);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1200);
+                }}
+              >
+                {copied ? "copied" : "copy"}
+              </IconButton>
+              <IconButton
+                icon="download"
+                title="Download"
+                onClick={() => {
+                  const a = document.createElement("a");
+                  a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+                  a.download = LOCK;
+                  a.click();
+                  URL.revokeObjectURL(a.href);
+                }}
+              >
+                download
+              </IconButton>
+            </>
+          }
+        />
       }
     >
       <Code text={text} lang="json" />
@@ -214,49 +263,50 @@ function Lockfile({ resolved, picked }: { resolved: View["resolved"]; picked: nu
   );
 }
 
-/** The content, with the file's path, details and actions in the breadcrumb slot. */
-function Frame(props: { path: string; meta: string; actions?: ReactNode; children: ReactNode }) {
-  const { slot, reveal } = useContext(Breadcrumb);
-  const parts = props.path.split("/");
-  const breadcrumb = (
-    <div className="pr-3 sm:pr-6 lg:pr-10 xl:pr-16">
-      <div className="flex h-9 items-center gap-1 overflow-hidden rounded-xl border border-zinc-200/40 bg-(--editor-bg)/50 px-3 text-xs whitespace-nowrap text-zinc-500 backdrop-blur-xl backdrop-saturate-150 dark:border-white/5">
-        <Icon
-          name={props.path === LOCK ? "lock" : "files"}
-          className="mr-1 size-3.5 text-zinc-400"
-        />
-        {parts.map((part, i) => (
-          <span
-            key={i}
-            className={`flex items-center gap-1 ${i === parts.length - 1 ? "shrink-0" : "min-w-0"}`}
-          >
-            {i > 0 && <Icon name="chevron" className="size-3 text-zinc-400" />}
-            <button
-              type="button"
-              title="Show in the Explorer"
-              onClick={() => reveal(parts.slice(0, i + 1).join("/"))}
-              className={`rounded px-0.5 hover:bg-zinc-200/60 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 ${
-                i === parts.length - 1
-                  ? "font-medium text-zinc-800 dark:text-zinc-200"
-                  : "min-w-0 truncate"
-              }`}
-            >
-              {part}
-            </button>
-          </span>
-        ))}
-        <span className="ml-auto hidden shrink-0 pl-4 font-mono text-[11px] text-zinc-400 sm:inline">
-          {props.meta}
-        </span>
-        <span className="ml-auto sm:hidden" />
-        <span className="flex items-center gap-1">{props.actions}</span>
-      </div>
-    </div>
-  );
+/** The content, with its breadcrumb floating in the slot over it. */
+function Frame(props: { crumbs: ReactNode; children: ReactNode }) {
+  const { slot } = useContext(Breadcrumb);
   return (
     <div className="h-full">
       {props.children}
-      {slot && createPortal(breadcrumb, slot)}
+      {slot &&
+        createPortal(<div className="pl-3 sm:pl-6 lg:pl-10 xl:pl-16">{props.crumbs}</div>, slot)}
+    </div>
+  );
+}
+
+/** The file's path, details and actions. */
+function Crumbs(props: { path: string; meta: string; actions?: ReactNode }) {
+  const { reveal } = useContext(Breadcrumb);
+  const parts = props.path.split("/");
+  return (
+    <div className="flex h-9 items-center gap-1 overflow-hidden rounded-xl border border-zinc-200/40 bg-(--editor-bg)/50 px-3 text-xs whitespace-nowrap text-zinc-500 backdrop-blur-xl backdrop-saturate-150 dark:border-white/5">
+      <Icon name={props.path === LOCK ? "lock" : "files"} className="mr-1 size-3.5 text-zinc-400" />
+      {parts.map((part, i) => (
+        <span
+          key={i}
+          className={`flex items-center gap-1 ${i === parts.length - 1 ? "shrink-0" : "min-w-0"}`}
+        >
+          {i > 0 && <Icon name="chevron" className="size-3 text-zinc-400" />}
+          <button
+            type="button"
+            title="Show in the Explorer"
+            onClick={() => reveal(parts.slice(0, i + 1).join("/"))}
+            className={`rounded px-0.5 hover:bg-zinc-200/60 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 ${
+              i === parts.length - 1
+                ? "font-medium text-zinc-800 dark:text-zinc-200"
+                : "min-w-0 truncate"
+            }`}
+          >
+            {part}
+          </button>
+        </span>
+      ))}
+      <span className="ml-auto hidden shrink-0 pl-4 font-mono text-[11px] text-zinc-400 sm:inline">
+        {props.meta}
+      </span>
+      <span className="ml-auto sm:hidden" />
+      <span className="flex items-center gap-1">{props.actions}</span>
     </div>
   );
 }
@@ -274,18 +324,15 @@ function Welcome({ examples, onRun }: { examples: string[]; onRun: (spec: string
         </p>
         <ul className="mt-3 list-disc space-y-1 pl-5">
           <li>
-            <code className="font-mono text-xs">upm/resolver</code> walks the whole dependency tree
-            (Dependencies view, live as it picks).
-          </li>
-          <li>
             The package's tarball is downloaded, integrity-checked and unpacked into the Explorer,
             or read from upm's store once an install has put it there.
           </li>
-          <li>
-            The lockfile upm would write lands beside it as{" "}
-            <code className="font-mono text-xs">{LOCK}</code>.
-          </li>
           <li>Every registry request shows in the Requests panel.</li>
+          <li>
+            Press Install and <code className="font-mono text-xs">upm/resolver</code> walks the
+            whole dependency tree (Dependencies view, live as it picks), and the lockfile upm would
+            write lands as <code className="font-mono text-xs">{LOCK}</code>.
+          </li>
           <li>
             Then upm's own install runs here, into an in-memory filesystem, and the Explorer shows
             the project it made: the <code className="font-mono text-xs">.upm</code> layout, the

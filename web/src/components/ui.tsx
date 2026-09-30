@@ -1,5 +1,5 @@
 // Small pieces shared by the panes.
-import type { ReactNode } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 
 // Stroke icons on a 24px grid, drawn after lucide.
 const ICONS = {
@@ -13,12 +13,6 @@ const ICONS = {
     <>
       <path d="M21 12h-8M21 6H8M21 18h-8" />
       <path d="M3 6v4c0 1.1.9 2 2 2h3M3 10v6c0 1.1.9 2 2 2h3" />
-    </>
-  ),
-  info: (
-    <>
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 16v-4m0-4h.01" />
     </>
   ),
   requests: <path d="m3 16 4 4 4-4M7 20V4m14 4-4-4-4 4m4-4v16" />,
@@ -55,6 +49,12 @@ const ICONS = {
       <path d="M9 18c-4.51 2-5-2-7-2" />
     </>
   ),
+  npm: (
+    <>
+      <rect width="18" height="18" x="3" y="3" rx="2" />
+      <path d="M8 16V8h8v8m-4-5v5" />
+    </>
+  ),
   package: (
     <path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73ZM12 22V12M3.3 7l7.7 4.73a2 2 0 0 0 2 0L20.7 7M7.5 4.27l9 5.15" />
   ),
@@ -74,6 +74,10 @@ const ICONS = {
   download: <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4m4-5 5 5 5-5m-5 5V3" />,
   reload: <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8m0-5v5h-5" />,
   chevron: <path d="m9 18 6-6-6-6" />,
+  external: (
+    <path d="M15 3h6v6M10 14 21 3m-3 10v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+  ),
+  terminal: <path d="m4 17 6-6-6-6m8 14h8" />,
   sidebar: (
     <>
       <rect x="3" y="4" width="18" height="16" rx="3" />
@@ -188,11 +192,42 @@ export function Waiting({ children, live }: { children: ReactNode; live?: boolea
   );
 }
 
-/** The row of a pane's details atop it; its tab names it. */
-export function PaneTitle({ children }: { children: ReactNode }) {
+/** The sidebar section a pane sits in: its title row names it and folds it. */
+export const SectionContext = createContext<
+  { title: string; open: boolean; toggle: () => void; trailing?: ReactNode } | undefined
+>(undefined);
+
+/**
+ * The row of a pane's details atop it. In a sidebar section the section's name comes first, on
+ * its own row that folds the section and stays shown while the rest is hidden.
+ */
+export function PaneTitle({ children }: { children?: ReactNode }) {
+  const section = useContext(SectionContext);
+  const details = children && (
+    <div className="flex h-7 items-center justify-between gap-2 pr-3 pl-2">{children}</div>
+  );
   return (
-    <div className="flex h-7 shrink-0 items-center justify-between gap-2 px-3 text-[11px] text-zinc-500">
-      {children}
+    <div data-pane-title className="shrink-0 text-[11px] text-zinc-500">
+      {section && (
+        <div
+          className={`flex items-center justify-between gap-2 pl-1 ${section.trailing ? "h-11 pr-1.5" : "h-7 pr-3"}`}
+        >
+          <button
+            type="button"
+            aria-expanded={section.open}
+            onClick={section.toggle}
+            className="flex h-6 shrink-0 items-center gap-1 rounded px-1 font-medium tracking-wide text-zinc-600 uppercase hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:bg-zinc-800"
+          >
+            <Icon
+              name="chevron"
+              className={`size-3 transition-transform ${section.open ? "rotate-90" : ""}`}
+            />
+            {section.title}
+          </button>
+          {section.trailing}
+        </div>
+      )}
+      {(!section || section.open) && details}
     </div>
   );
 }
@@ -277,11 +312,33 @@ export function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+/** A number kept in `localStorage` across visits, such as a size dragged to. */
+export function useStored<T extends number | undefined>(key: string, fallback: T) {
+  const [value, setValue] = useState<number | T>(() => {
+    try {
+      const n = Number.parseFloat(localStorage.getItem(key)!);
+      return Number.isFinite(n) ? n : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  const set = (n: number) => {
+    setValue(n);
+    try {
+      localStorage.setItem(key, String(Math.round(n)));
+    } catch {}
+  };
+  return [value, set] as const;
+}
+
 export function Sash({
   vertical,
+  place,
   onDrag,
 }: {
   vertical?: boolean;
+  /** Where it sits in its box, in place of the gap beside it. Its line runs down the middle. */
+  place?: string;
   onDrag: (e: PointerEvent) => void;
 }) {
   return (
@@ -299,11 +356,13 @@ export function Sash({
         addEventListener("pointerup", up);
         document.body.style.cursor = vertical ? "row-resize" : "col-resize";
       }}
-      className={`absolute z-10 transition-colors delay-100 hover:bg-amber-500/60 ${
-        vertical
-          ? "inset-x-0 -top-2 h-1 cursor-row-resize"
-          : "inset-y-0 -right-0.5 w-1 cursor-col-resize"
-      }`}
-    />
+      className={`group/sash absolute z-10 flex ${
+        vertical ? "cursor-row-resize flex-col" : "cursor-col-resize"
+      } justify-center ${place ?? (vertical ? "inset-x-0 -top-2 h-1" : "inset-y-0 -right-0.5 w-1")}`}
+    >
+      <div
+        className={`transition-colors delay-100 group-hover/sash:bg-amber-500/60 ${vertical ? "h-1" : "w-1"}`}
+      />
+    </div>
   );
 }

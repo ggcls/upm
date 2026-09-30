@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import type { RequestEntry } from "../lib/client.ts";
 import { formatBytes } from "./code.tsx";
-import { clamp, Icon, IconButton, ISLAND, Sash, Tab, Tabs, Waiting } from "./ui.tsx";
+import { clamp, Icon, IconButton, ISLAND, Sash, Tab, Tabs, useStored, Waiting } from "./ui.tsx";
 
 export type PanelTab = "requests" | "problems";
 
@@ -22,7 +22,7 @@ export function Panel(props: {
   problems: Problem[];
 }) {
   const { tab, requests, problems } = props;
-  const [height, setHeight] = useState(240);
+  const [height, setHeight] = useStored("panel-height", 240);
   const [maximized, setMaximized] = useState(false);
   const ref = useRef<HTMLElement>(null);
   if (!tab) return null;
@@ -35,7 +35,7 @@ export function Panel(props: {
       ref={ref}
       // Maximized, it takes all the height and shrinks only by what the content above can't give up.
       style={{ height: maximized ? "100%" : height }}
-      className={`relative mt-3 flex flex-col pr-3 sm:pr-6 lg:pr-10 xl:pr-16 ${maximized ? "" : "max-h-[80%] shrink-0"}`}
+      className={`relative mt-3 flex flex-col pl-3 sm:pl-6 lg:pl-10 xl:pl-16 ${maximized ? "" : "max-h-[80%] shrink-0"}`}
     >
       <Sash
         vertical

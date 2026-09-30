@@ -6,7 +6,7 @@ import type { View } from "../app.tsx";
 import type { Size } from "../lib/client.ts";
 import { formatBytes } from "./code.tsx";
 import type { InstalledFile } from "../lib/install.ts";
-import { pathOf } from "../lib/route.ts";
+import { InstallChip, installState } from "./install-button.tsx";
 import { ErrorBox, Icon, IconButton, PaneTitle, Spinner, Waiting } from "./ui.tsx";
 
 export const LOCK = "upm.lock";
@@ -21,7 +21,7 @@ export function treePath(name: string, path = "") {
  * to. Symlinks count apart, with no bytes. And the store's apart, which holds every install's
  * content, not only this one's.
  */
-function tally(files: Map<string, InstalledFile>, links: Map<string, string> | undefined) {
+export function tally(files: Map<string, InstalledFile>, links: Map<string, string> | undefined) {
   const project = { files: 0, links: 0, bytes: 0 };
   const store = { files: 0, links: 0, bytes: 0 };
   const opened = [...(links?.keys() ?? [])].map((at) => `${at}/`);
@@ -53,9 +53,18 @@ export function Explorer(props: {
   /** A path to open the way to, scroll to and focus. */
   reveal?: { path: string };
   onSelect: (path: string) => void;
+  onInstall: () => void;
+  onReinstall: () => void;
 }) {
   const { view, files, picked, selected, onSelect } = props;
-  if (!view) return <Waiting>Resolve a package to browse its files.</Waiting>;
+  if (!view) {
+    return (
+      <>
+        <PaneTitle />
+        <Waiting>Resolve a package to browse its files.</Waiting>
+      </>
+    );
+  }
   const { tarball, resolved, installed } = view;
   const lock = resolved && !(resolved instanceof Error) ? resolved.lockfile : undefined;
   const hasTree = files !== undefined || lock !== undefined;
@@ -87,11 +96,12 @@ export function Explorer(props: {
             )}
           </span>
         </span>
-        {view.dependencies && (
+        <InstallChip view={view} onInstall={props.onInstall} />
+        {(installState(view) === "done" || installState(view) === "failed") && (
           <IconButton
             icon="reload"
             title="Reinstall: resolve and install afresh"
-            href={pathOf(view.spec.trim())}
+            onClick={props.onReinstall}
           />
         )}
       </PaneTitle>
@@ -134,7 +144,7 @@ export function Explorer(props: {
         {!tarball && !(view.top instanceof Error) && (
           <Pending name={treePath(view.name).slice(0, -1)}>fetching tarball</Pending>
         )}
-        {!resolved && <Pending name={LOCK}>resolving · {picked} picked</Pending>}
+        {view.requested && !resolved && <Pending name={LOCK}>resolving · {picked} picked</Pending>}
         {resolved instanceof Error && (
           <Pending name={LOCK} failed>
             resolve failed

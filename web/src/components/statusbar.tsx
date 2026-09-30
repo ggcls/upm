@@ -36,7 +36,7 @@ export function StatusBar(props: {
     );
   } else if (view?.resolved) {
     state = <Timeline view={view} resolved={view.resolved} />;
-  } else if (view) {
+  } else if (view?.requested) {
     state = (
       <span className="flex items-center gap-1.5">
         <Pulse /> Resolving · {props.picked} picked

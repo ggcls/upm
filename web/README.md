@@ -24,8 +24,16 @@ Node server by default (`node .output/server/index.mjs`); set `NITRO_PRESET` for
 ## App
 
 A browser client for upm. Enter a package spec:
-it resolves the tree with `upm/resolver`, shows the lockfile upm would write, and fetches,
-verifies and lists the package's tarball — all from the browser, against the registry's CORS.
+it picks the version with `upm/resolver`, and fetches, verifies and lists the package's tarball —
+all from the browser, against the registry's CORS. The package's `README.md` shows as soon as
+the tarball's stream yields it, which npm packs near the start, while the rest still downloads
+and before the integrity check (a failed check takes it back). It opens with the package at a
+glance (links, license, what the tarball holds, and a year of weekly downloads from npm's
+`api.npmjs.org/downloads`), then the Install button beside a toggle for the commands that
+install upm and add the package (remembered in `localStorage`). On a small screen nothing else is
+asked for until the Install button (also small in the sidebar) is pressed; a wider one presses it
+itself once the README has painted. Then it resolves the whole tree and shows the lockfile upm
+would write.
 
 While a name is typed, the spec box on both pages suggests packages from the registry's
 `/-/v1/search` (`src/components/suggest.ts`), and after `@`, the package's tags and versions from
@@ -38,7 +46,7 @@ node ./upm install         # from the repo root
 npm run web                # or: cd web && npx vite
 ```
 
-Once the resolve is in, upm's own `install` runs in the tab: `src/lib/node.ts` puts a
+Once that resolve is in, upm's own `install` runs in the tab: `src/lib/node.ts` puts a
 `process` in place whose `getBuiltinModule` hands out an in-memory `fs`, a posix `path` and
 `os`, and nothing else — hashing and gunzip stay WebCrypto and `DecompressionStream`, and with no
 `worker_threads` every pool runs on the one thread. The Explorer then shows the project
