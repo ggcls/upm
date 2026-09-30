@@ -1212,11 +1212,12 @@ describe("startup budget", () => {
     // 153,974 with case-folded file names linked last-wins; 154,478 with a lockfile's urls off
     // its registries told; 154,685 with a registry that gives no publish dates told. 155,055 with a
     // dropped optional asked for once more, `--help` and a no-op install within noise; 155,463 with
-    // unframed tarball bytes asked for once more, the same.
+    // unframed tarball bytes asked for once more, the same. 155,771 with a tree held while it is
+    // relinked, the lock itself lazy, `--help` and a no-op install within noise.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(155_470);
+    expect(bytes).toBeLessThanOrEqual(155_780);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
@@ -1229,6 +1230,7 @@ describe("startup budget", () => {
       "unpack-pool.ts",
       "progress.ts",
       "verify.ts",
+      "tree-lock.ts",
     ];
     for (const name of lazy) {
       expect(modules.has(name)).toBe(false);
@@ -1332,6 +1334,20 @@ describe("install recovers a store that lost content", () => {
     expect(await readFile(join(dir, "node_modules", "a", "index.js"), "utf8")).toBe(
       "module.exports = 1;\n",
     );
+  });
+
+  it("links one tree when two installs of it run at once", async () => {
+    await Promise.all([install(), install()]);
+    expect(await readFile(join(dir, "node_modules", "a", "index.js"), "utf8")).toBe(
+      "module.exports = 1;\n",
+    );
+    const left = await readdir(join(dir, "node_modules"));
+    expect(left.filter((name) => name.startsWith(".upm.linking"))).toEqual([]);
+    // The tree either install left is the one the state describes.
+    await install();
+    expect(
+      JSON.parse(await readFile(join(dir, "node_modules", ".upm.json"), "utf8")),
+    ).toMatchObject({ complete: true });
   });
 });
 

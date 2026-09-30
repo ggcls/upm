@@ -733,19 +733,34 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
           },
     tarballs: filesOf(ctx, lock),
     workspaces: project.proof,
+    hold: async () => {
+      let waited = false;
+      const nm = builtin.path.join(dir, "node_modules");
+      release ??= await (
+        await import("./tree-lock.ts")
+      ).holdTree(nm, () => {
+        waited = true;
+        ctx.log(`waiting for another install of ${dir}`, "info");
+      });
+      return waited;
+    },
   };
-  const linked = await linkTree(resolution, link).catch(async (error: unknown) => {
-    await filling;
-    // The store lost content between the fill and the link — a concurrent prune, or a state
-    // file that outlived the store it names. A *fresh* store, because the one above memoized
-    // every index it read and would never look at the disk again, and a verifying one: the
-    // failed link is the proof that an index here promises files that are not on disk, so this
-    // is the one pass that must stat them rather than believe them.
-    if ((error as { code?: string }).code !== "ELINK") throw error;
-    const again = openStore(ctx, true);
-    await fill(again);
-    return await linkTree(resolution, { ...link, store: again, awaiting: undefined });
-  });
+  // Held from the link's first change to the tree until it is done, the retry included.
+  let release: (() => Promise<void>) | undefined;
+  const linked = await linkTree(resolution, link)
+    .catch(async (error: unknown) => {
+      await filling;
+      // The store lost content between the fill and the link — a concurrent prune, or a state
+      // file that outlived the store it names. A *fresh* store, because the one above memoized
+      // every index it read and would never look at the disk again, and a verifying one: the
+      // failed link is the proof that an index here promises files that are not on disk, so this
+      // is the one pass that must stat them rather than believe them.
+      if ((error as { code?: string }).code !== "ELINK") throw error;
+      const again = openStore(ctx, true);
+      await fill(again);
+      return await linkTree(resolution, { ...link, store: again, awaiting: undefined });
+    })
+    .finally(() => release?.());
   await filling;
   await store.flush();
   await keepTreeLock(ctx, dir, linked.upToDate, inputs);

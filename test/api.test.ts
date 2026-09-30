@@ -8,6 +8,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  readlink,
   realpath,
   rename,
   rm,
@@ -26,6 +27,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as upm from "../src/index.ts";
 import { parseLockfile } from "../src/resolver.ts";
 import { stampOf } from "../src/state.ts";
+import { holdTree, TREE_HELD } from "../src/tree-lock.ts";
 import { hashOf } from "./hash.ts";
 import { makeTarball } from "./tarball.ts";
 
@@ -99,6 +101,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks(); // a clock moved on must not age the next test's files
   await new Promise((done) => server.close(done));
   await rm(dir, { recursive: true, force: true });
 });
@@ -685,6 +688,30 @@ describe("api", () => {
     await upm.install(base);
     expect(await readFile(file, "utf8")).toBe(text);
     expect(fetches()).toBe(1);
+  });
+
+  it("waits for another install of the tree only when the tree must change", async () => {
+    await writeFile(join(dir, "package.json"), '{"dependencies":{"nanoid":"^5"}}');
+    await upm.install(base);
+    const other = await holdTree(join(dir, "node_modules"), () => {});
+    // Standing: nothing to change, so nothing to wait for.
+    expect(await upm.install(base)).toMatchObject({ upToDate: true });
+
+    const top = join(dir, "node_modules", "nanoid");
+    const target = await readlink(top);
+    await rm(top);
+    let done = false;
+    const waiting = upm.install(base).then((result) => ((done = true), result));
+    await vi.waitFor(() => expect(lines).toContain(`waiting for another install of ${dir}`), {
+      timeout: 5000,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(done).toBe(false);
+    // What the other install did while this one waited: the very tree this one wants.
+    await symlink(target, top, "junction"); // as upm links it on Windows
+    await other();
+    expect(await waiting).toMatchObject({ upToDate: true });
+    expect(await readdir(join(dir, "node_modules"))).not.toContain(TREE_HELD);
   });
 
   it("fails a frozen install without a lockfile", async () => {

@@ -75,6 +75,11 @@ export interface LinkOptions {
   onProgress?: (progress: Progress) => void;
   /** The proof of the workspace set, for the state file: see `InstallState.workspaces`. */
   workspaces?: InstallState["workspaces"];
+  /**
+   * Asked once the tree must change, before anything in it does: holds off any other install
+   * of this tree. True when it had to wait for one.
+   */
+  hold?: () => Promise<boolean>;
 }
 
 /**
@@ -256,25 +261,31 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       }),
       workspaces: options.workspaces,
     }) satisfies InstallState;
-  if (!options.verify && state?.hash === hash && state.complete) {
+  const stood = async (state: InstallState | undefined) => {
+    if (options.verify || state?.hash !== hash || !state.complete) return undefined;
     const read = await standing(options.dir, storeDir, tops, resolution, state, production, hoist);
-    if (read) {
-      // The same tree from other inputs — a lockfile rewritten in the same words — or with a
-      // local tarball touched but holding the same bytes, or the workspace set proven anew:
-      // the state learns them, so the next install gets the short check, and hashes no
-      // tarball and globs no workspace again.
-      const learned = inputs && state.inputs !== inputs.hash;
-      const touched = JSON.stringify(state.tarballs) !== JSON.stringify(options.tarballs);
-      const proven = JSON.stringify(state.workspaces) !== JSON.stringify(options.workspaces);
-      if (learned || touched || proven) {
-        await writeState(options.dir, stateOf(state.entries, true, read, state.missing));
-      }
-      trace("link:standing");
-      const dropped = state.missing ?? [];
-      return { ...result, reused: state.entries.length, upToDate: true, dropped };
+    if (!read) return undefined;
+    // The same tree from other inputs — a lockfile rewritten in the same words — or with a
+    // local tarball touched but holding the same bytes, or the workspace set proven anew:
+    // the state learns them, so the next install gets the short check, and hashes no
+    // tarball and globs no workspace again.
+    const learned = inputs && state.inputs !== inputs.hash;
+    const touched = JSON.stringify(state.tarballs) !== JSON.stringify(options.tarballs);
+    const proven = JSON.stringify(state.workspaces) !== JSON.stringify(options.workspaces);
+    if (learned || touched || proven) {
+      await writeState(options.dir, stateOf(state.entries, true, read, state.missing));
     }
-  }
+    const dropped = state.missing ?? [];
+    return { ...result, reused: state.entries.length, upToDate: true, dropped };
+  };
+  const stands = await stood(state);
   trace("link:standing");
+  if (stands) return stands;
+  // After a wait, the install we waited for may have linked just this tree.
+  if (await options.hold?.()) {
+    const now = await stood(await readState(options.dir));
+    if (now) return now;
+  }
   // From here the tree is being rewritten, so it describes nothing until we say so again.
   await clearState(options.dir);
 

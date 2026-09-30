@@ -153,6 +153,12 @@ again on the next install's one retry. Anything else leaves the tree incomplete,
 next install fills it again. Only `--verify` or a new resolution asks about a certified one
 again.
 
+One install at a time rewrites a tree. `node_modules/.upm.linking` is taken with an exclusive
+create once the link finds the tree must change, never on the no-op path. Its holder touches it
+every 2 s. A waiter takes it over when it is untouched for 10 s and its pid is gone, or for a
+minute whatever the pid says, since a pid from another namespace proves nothing. The store has
+no lock: an install that loses content to a prune fails its link and refills.
+
 ## Optimization must keep the same answer
 
 Metadata parsing shortcuts must select the real registry member, never a lookalike
