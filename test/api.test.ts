@@ -529,6 +529,33 @@ describe("api", () => {
     expect((await upm.install(base)).upToDate).toBe(true);
   });
 
+  it("says so when the lockfile fetches a package from another host, up to date or not", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^5" } }));
+    await upm.install(base);
+    // Its own registry's url is never told, written down or not.
+    expect(lines.filter((line) => line.includes("not a registry"))).toEqual([]);
+    const file = join(dir, "upm.lock");
+    const lock = await readJson(file);
+    lock.packages["nanoid@5.0.0"].resolved = `${registry()}/nanoid/-/odd-5.0.0.tgz`;
+    await writeFile(file, JSON.stringify(lock));
+    await upm.install({ ...base, frozen: true, offline: true });
+    expect(lines.filter((line) => line.includes("not a registry"))).toEqual([]);
+    lock.packages["nanoid@5.0.0"].resolved = "https://evil.test/nanoid.tgz";
+    await writeFile(file, JSON.stringify(lock));
+    await rm(join(dir, "node_modules"), { recursive: true });
+    const told = "nanoid@5.0.0 locked to https://evil.test, not a registry in use";
+    // The store holds it by integrity, so nothing is asked: frozen and offline both install.
+    lines = [];
+    await upm.install({ ...base, frozen: true, offline: true });
+    expect(lines).toContain(told);
+    // Up to date, it is still said: the warning is kept with the tree.
+    lines = [];
+    expect(await upm.install({ ...base, frozen: true, offline: true })).toMatchObject({
+      upToDate: true,
+    });
+    expect(lines).toContain(told);
+  });
+
   it("fails an offline install missing an optional, rather than skip it", async () => {
     const optionalDependencies = { nanoid: "^5" };
     await writeFile(join(dir, "package.json"), JSON.stringify({ optionalDependencies }));

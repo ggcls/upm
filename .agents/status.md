@@ -142,6 +142,11 @@ These need a scope decision, not just a patch:
   registries with different credentials share a host, the first covers paths outside both,
   where npm goes by the package's scope. A cross-origin redirect
   drops it, which is Node's fetch behavior and what `test/config.test.ts` pins.
+- A lockfile `resolved` url on a host that is neither a configured registry's nor npmjs's is
+  warned about, not refused: a registry moved since the lock was made looks the same. It goes
+  by host, since GitLab's instance registry points into each project's path. Refusing it under
+  `--frozen` is the next step if mirrors that point elsewhere prove rare
+  (`onRegistry` in `src/lock.ts`).
 - The release age (default one day) filters fresh picks through the registry's view only:
   exact versions, locked ones and libc reads are never held back, since a package's exact pins
   are older than the package. A name whose abbreviated document changed after the cutoff costs

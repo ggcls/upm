@@ -2523,7 +2523,7 @@ describe("workspaces", () => {
       const lock = parseLockfile(formatLockfile(toLockfile(out)));
       expect(lock.root.dependencies).toEqual({ b: "link:packages/b", c: "1.0.0" });
       expect(Object.keys(lock.packages)).toEqual(["b@1.0.0", "c@1.0.0", "nanoid@5.0.0"]);
-      expect(fromLockfile(lock)).toEqual(out);
+      expect(fromLockfile(lock, () => "https://r")).toEqual(out);
     });
   });
 
@@ -2781,7 +2781,7 @@ describe("workspaces", () => {
       });
       expect(Object.keys(lock.packages)).toEqual(["nanoid@5.0.0"]);
       expect(lock.root.workspaces).toEqual(["packages/*"]);
-      expect(fromLockfile(lock)).toEqual(out);
+      expect(fromLockfile(lock, () => "https://r")).toEqual(out);
     });
   });
 });
@@ -2864,7 +2864,7 @@ describe("tarball dependencies", () => {
       version: "2.0.0",
       integrity: "sha512-file:vendor/b.tgz",
     });
-    expect(fromLockfile(lock)).toEqual(out);
+    expect(fromLockfile(lock, () => "https://r")).toEqual(out);
 
     const again = tarballs({});
     const grown = { dependencies: { ...root.dependencies, c: "^1" } };

@@ -133,6 +133,7 @@ export function fromCheckedLockfile(lock: Lockfile, baseFor = npmjs): Resolution
   const shipped = shippedSet(lock);
   const required = requiredSet(lock);
   const packages: Record<string, ResolvedPackage> = {};
+  const elsewhere = new Map<string, string[]>(); // host -> keys fetched from it
   for (const [path, ws] of Object.entries(lock.workspaces ?? {})) {
     // Always linked, so never dev or optional: what a top declares is walked in full.
     packages[keyOf(path, ws)] = {
@@ -159,6 +160,10 @@ export function fromCheckedLockfile(lock: Lockfile, baseFor = npmjs): Resolution
     const tail = key.slice(at + 1);
     const source = entry.version === undefined ? undefined : tail;
     const version = entry.version ?? tail;
+    if (!source && entry.resolved && !onRegistry(entry.resolved, name, baseFor)) {
+      const host = originOf(entry.resolved);
+      elsewhere.set(host, [...(elsewhere.get(host) ?? []), key]);
+    }
     packages[key] = {
       name,
       version,
@@ -180,7 +185,40 @@ export function fromCheckedLockfile(lock: Lockfile, baseFor = npmjs): Resolution
       ...(entry.peers && { peers: entry.peers }),
     };
   }
-  return { root: root(lock.root), packages, warnings: [] };
+  const warnings = [...elsewhere].map(
+    ([host, [key, ...more]]) =>
+      `${key}${more.length ? ` and ${more.length} more` : ""} locked to ${host}, not a registry in use`,
+  );
+  return { root: root(lock.root), packages, warnings };
+}
+
+/**
+ * Whether a written-down tarball url is on the host of the registry its name is read from, or
+ * npmjs, where a mirror's documents often still point. Anywhere else is what an edited lockfile
+ * would say: the integrity is the lockfile's too, so it proves nothing about the host. Told,
+ * not refused: a registry moved since the lock was made says the same. The host, not the path:
+ * GitLab's instance registry sends each project's own. An alias is fetched as the package it
+ * names, which only the url tells: from the registry of unscoped names or of a scope in its
+ * path (`@std/path: npm:@jsr/std__path`, from JSR's).
+ */
+function onRegistry(url: string, name: string, baseFor: BaseFor): boolean {
+  const host = (at: string) => /^https?:\/\/([^/?#]*)/i.exec(at)?.[1]!.toLowerCase();
+  let path = url;
+  try {
+    path = decodeURIComponent(url);
+  } catch {}
+  const scopes = path.split("/").filter((part) => part.startsWith("@"));
+  const bases = [name, "-", ...scopes.map((scope) => `${scope}/-`)].map(baseFor);
+  return [...bases, registryBase()].some((at) => host(at) === host(url));
+}
+
+/** Where a url points, without any credentials in it; the url itself when it has no origin. */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
 }
 
 /**

@@ -645,7 +645,8 @@ the package changed after the cutoff.
 
 For standard registry tarball URLs, `upm.lock` leaves out the registry address and
 uses the installing machine's config. This lets you change mirrors without
-rewriting the lockfile. Nonstandard tarball URLs are kept as written.
+rewriting the lockfile. Nonstandard tarball URLs are kept as written, and an install
+warns about any on a host other than the configured registries and npmjs.
 
 Other npm settings, including proxy and certificate options, are not supported.
 There is no `upm login` or `upm config set`.
