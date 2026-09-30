@@ -82,11 +82,13 @@ The install state carries two levels of evidence. Its `hash` describes the resol
 compared with one computed from the lockfile; its `inputs` describe what that resolution was
 computed from (lockfile bytes, root manifest, each workspace's path and manifest, store,
 registry hosts, platform, flags), and an install whose inputs match checks only what the state
-recorded — the links and bins of the root and of each workspace, the `.upm` entry names —
-without reading the graph. Both trust the state's `entries`, `root` and `tops` for _which_
-names to look for; neither reads a file's bytes. Anything that changes what a resolution is a
-function of (a new `.npmrc` key that changes hosts, say) must be added to the inputs
-(`inputsOf` in `src/api.ts`), or the short check lies.
+recorded — the links and bins of the root and of each workspace, the package dir each direct
+link lands on, the `.upm` entry names — without reading the graph. It costs a stat per direct
+dependency, never one per package; damage deeper in an entry is `--verify`'s to find. Both
+trust the state's `entries`, `root` and `tops` for _which_ names to look for; neither reads a
+file's bytes. Anything that changes what a resolution is a function of (a new `.npmrc` key
+that changes hosts, say) must be added to the inputs (`inputsOf` in `src/api.ts`), or the
+short check lies.
 
 Which workspaces there are is an input too, and globbing for them was most of a no-op install
 in a big monorepo. The state keeps a proof of the set (`listWorkspaces` in

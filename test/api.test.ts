@@ -298,6 +298,19 @@ describe("api", () => {
     expect((await upm.install(base)).upToDate).toBe(true);
   });
 
+  it("does not find a tree up to date off the inputs once a direct package's dir is gone", async () => {
+    await writeFile(join(dir, "package.json"), '{"name":"demo","dependencies":{"nanoid":"^5"}}');
+    await upm.install(base);
+    expect((await upm.install(base)).upToDate).toBe(true);
+    // The top link still reads the same; only the package dir inside its entry is gone.
+    const at = join(dir, "node_modules", "nanoid");
+    await rm(await realpath(at), { recursive: true });
+
+    expect((await upm.install(base)).upToDate).toBe(false);
+    expect(await readFile(join(at, "index.js"), "utf8")).toContain("nanoid");
+    expect((await upm.install(base)).upToDate).toBe(true);
+  });
+
   it("finds a workspace tree up to date without a glob, and never once a workspace moves", async () => {
     const root = { name: "root", workspaces: ["packages/*"], dependencies: { a: "*" } };
     await writeFile(join(dir, "package.json"), JSON.stringify(root));

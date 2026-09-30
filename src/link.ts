@@ -498,6 +498,8 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
    */
   async function intact(entry: Entry, deps: [string, Entry][]): Promise<boolean> {
     const nmDir = join(storeDir, entry.key, "node_modules");
+    // A file under the package dir proves it; with none, only a stat does, or a top link dangles.
+    if (entry.index.files.length === 0 && !landsOnDir(join(nmDir, entry.pkg.name))) return false;
     // `--verify` reads content too: a file edited or renamed in place keeps its size.
     if (options.verify) {
       const { placed } = await import("./verify.ts");
@@ -1050,9 +1052,9 @@ function topsOf(dir: string, resolution: Resolution): Top[] {
 
 /**
  * Is the tree the state file describes still on disk? Its shape only: every top's direct
- * dependency linked into an entry of its own or to its workspace, every bin placed, every
- * recorded entry a real directory, `.upm/node_modules` too when hoisting. Damage inside an entry, and content that changed without
- * changing size, need `--verify`.
+ * dependency linked into an entry of its own or to its workspace and landing on a directory,
+ * every bin placed, every recorded entry a real directory, `.upm/node_modules` too when hoisting.
+ * Other damage inside an entry, and content that changed without changing size, need `--verify`.
  */
 async function standing(
   dir: string,
@@ -1085,9 +1087,9 @@ type Linked = Record<string, TopLinks>;
 /**
  * Is the tree a state file with `root` describes still on disk? The same shape `standing`
  * checks, read off the state alone: every recorded link of the root and of each workspace
- * pointing where it was made to, every recorded bin placed, every recorded entry a directory
- * under `.upm`, and `.upm/node_modules` there unless `hoist` is off. For the install whose inputs have not changed, which has no graph to check
- * against.
+ * pointing where it was made to and landing on a directory, every recorded bin placed, every
+ * recorded entry a directory under `.upm`, and `.upm/node_modules` there unless `hoist` is off.
+ * For the install whose inputs have not changed, which has no graph to check against.
  */
 export function treeStanding(dir: string, state: InstallState, hoist = true): boolean {
   // Sync, like the other reads of the no-op path: a few directory reads, and no
@@ -1099,7 +1101,8 @@ export function treeStanding(dir: string, state: InstallState, hoist = true): bo
   for (const [path, { links, bins }] of Object.entries({ ...state.tops, "": root })) {
     const nm = join(dir, path, "node_modules");
     for (const [name, target] of Object.entries(links)) {
-      if (readLinkSync(join(nm, name)) !== target) return false;
+      const at = join(nm, name);
+      if (readLinkSync(at) !== target || !landsOnDir(at)) return false;
     }
     if (bins.length === 0) continue;
     let placed: string[];
@@ -1168,6 +1171,7 @@ async function standingTop(
       const store = relative(dirname(at), join(dir, "node_modules", ".upm")) + sep;
       if (!to.startsWith(store) || !to.endsWith(join(sep, "node_modules", name))) return undefined;
     }
+    if (!landsOnDir(join(nm, name))) return undefined;
     read.links[name] = to;
     for (const bin of Object.keys(pkg?.bin ?? {})) bins.add(bin);
   }
@@ -1181,6 +1185,20 @@ async function standingTop(
   }
   read.bins = [...bins];
   return read;
+}
+
+/**
+ * Does the link at `at` still lead to a package? A link reads the same after the entry's package
+ * dir is deleted under it, so the up-to-date checks follow it: one stat per direct dependency,
+ * never one per package in the graph. The dir, not its package.json, which a tarball may lack
+ * and would then never look up to date. Sync, like the rest of the no-op path.
+ */
+function landsOnDir(at: string): boolean {
+  try {
+    return builtin.fs.statSync(at, { throwIfNoEntry: false })?.isDirectory() === true;
+  } catch {
+    return false; // a link loop, say: not a package either way
+  }
 }
 
 /** Leaves a symlink that is already right alone; anything else there is replaced. */

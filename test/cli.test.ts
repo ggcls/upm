@@ -1206,11 +1206,12 @@ describe("startup budget", () => {
     // 150,628 with each top's pins held to their ranges and a failed install's lockfile put back.
     // 152,669 with tarballs checked against the package they are installed as, `--help` within
     // noise (50/49 and 134/134 ms). 152,815 with a short blob found under a damaged entry.
-    // 152,993 with `--verify` reading content through a lazy `verify.ts`.
+    // 152,993 with `--verify` reading content through a lazy `verify.ts`. 153,191 with the no-op
+    // check following each direct link to its package dir.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(153_020);
+    expect(bytes).toBeLessThanOrEqual(153_220);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

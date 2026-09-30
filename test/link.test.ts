@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   symlink,
@@ -726,6 +727,63 @@ describe("linkTree state", () => {
       join(project, "node_modules"),
       join(project, "node_modules", ".upm"),
     ]);
+  });
+
+  it("does not call the tree up to date after a direct dependency's package dir is deleted", async () => {
+    const { store, resolution } = await seed([{ name: "a", files: { "index.js": "a" } }]);
+    await linkTree(resolution, { dir: project, store });
+    // The entry dir and the top link both still stand; only what the link leads to is gone.
+    await rm(join(await entryNm(resolution, "a@1.0.0"), "a"), { recursive: true });
+
+    const again = await linkTree(resolution, { dir: project, store });
+
+    expect(again).toMatchObject({ upToDate: false, repaired: 1 });
+    expect(await read(join(project, "node_modules", "a", "index.js"))).toBe("a");
+  });
+
+  it("does not call the tree up to date after a scoped direct dependency's dir is replaced by a file", async () => {
+    const { store, resolution } = await seed([{ name: "@s/a", files: { "index.js": "a" } }]);
+    await linkTree(resolution, { dir: project, store });
+    const at = join(await entryNm(resolution, "@s/a@1.0.0"), "@s", "a");
+    await rm(at, { recursive: true });
+    await writeFile(at, "");
+
+    expect((await linkTree(resolution, { dir: project, store })).upToDate).toBe(false);
+    expect(await read(join(project, "node_modules", "@s", "a", "index.js"))).toBe("a");
+  });
+
+  it("repairs a direct dependency whose package dir became a link loop, without throwing", async () => {
+    const { store, resolution } = await seed([{ name: "a", files: { "index.js": "a" } }]);
+    await linkTree(resolution, { dir: project, store });
+    const at = join(await entryNm(resolution, "a@1.0.0"), "a");
+    await rm(at, { recursive: true });
+    await symlink("a", at); // stat follows it into ELOOP
+
+    expect((await linkTree(resolution, { dir: project, store })).upToDate).toBe(false);
+    expect(await read(join(project, "node_modules", "a", "index.js"))).toBe("a");
+  });
+
+  it("rebuilds the package dir of an entry with no files once it is gone", async () => {
+    // A local tarball may hold nothing at all: no file under the dir can then prove it is there.
+    const tarball = makeTarball([]);
+    const url = "https://reg/e.tgz";
+    const store = createStore({ dir: storeDir, fetch: stubFetch({ [url]: tarball }) });
+    await store.add(url, hashOf(tarball));
+    const id = "e@file:e.tgz";
+    const e = { name: "e", version: "1.0.0", source: "file:e.tgz", resolved: url };
+    const pkg = { ...e, integrity: hashOf(tarball), dependencies: {}, optional: false, dev: false };
+    const resolution: Resolution = {
+      root: { dependencies: { e: "file:e.tgz" } },
+      packages: { [id]: { ...pkg, bin: {} } },
+      warnings: [],
+    };
+    await linkTree(resolution, { dir: project, store });
+    const at = join(project, "node_modules", "e");
+    await rm(await realpath(at), { recursive: true });
+
+    expect(await linkTree(resolution, { dir: project, store })).toMatchObject({ repaired: 1 });
+    expect((await stat(at)).isDirectory()).toBe(true);
+    expect((await linkTree(resolution, { dir: project, store })).upToDate).toBe(true);
   });
 
   it("does not look inside the entries on the fast path", async () => {
