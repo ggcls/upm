@@ -5,7 +5,7 @@ import { gzipSync } from "node:zlib";
 
 export interface Entry {
   path: string;
-  data: string;
+  data: string | Uint8Array;
   mode?: number;
 }
 

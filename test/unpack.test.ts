@@ -1,11 +1,14 @@
 import { Buffer } from "node:buffer";
-import { mkdtemp, readFile, rm, rmdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, win32 } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import { parseIntegrity } from "../src/integrity.ts";
+import { builtin } from "../src/builtin.ts";
 import { hashOf } from "./hash.ts";
-import { createWriter } from "../src/unpack.ts";
+import { assemble, createWriter } from "../src/unpack.ts";
+import { makeTarball } from "./tarball.ts";
 
 const writer = createWriter(join(tmpdir(), "upm-shard-test"));
 
@@ -195,5 +198,159 @@ describe("put against a store changing underneath it", () => {
     await expect(writer.put(file, data, 0o444)).resolves.toBeUndefined();
     expect(await readFile(file, "utf8")).toBe("content");
     await rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe.each(["unpack", "plain tar", "packed", "spooled"])("%s bin shebangs", (route) => {
+  it.each([
+    {
+      label: "strips only the shebang CR and keeps body CRLFs",
+      input: Buffer.from('#!/usr/bin/env node\r\nconsole.log("hello")\r\n'),
+      expected: Buffer.from('#!/usr/bin/env node\nconsole.log("hello")\r\n'),
+      declared: true,
+    },
+    {
+      label: "keeps an LF shebang and body CRLFs",
+      input: Buffer.from('#!/usr/bin/env node\nconsole.log("hello")\r\n'),
+      declared: true,
+    },
+    {
+      label: "keeps an undeclared executable's CRLF shebang",
+      input: Buffer.from('#!/usr/bin/env node\r\nconsole.log("hello")\r\n'),
+      declared: false,
+      mode: 0o755,
+    },
+    {
+      label: "keeps an ordinary file's CRLF shebang",
+      input: Buffer.from('#!/usr/bin/env node\r\nconsole.log("hello")\r\n'),
+      declared: false,
+    },
+    {
+      label: "keeps a declared bin without a shebang",
+      input: Buffer.from('console.log("hello")\r\n'),
+      declared: true,
+    },
+    {
+      label: "keeps an unterminated shebang",
+      input: Buffer.from("#!/usr/bin/env node\r"),
+      declared: true,
+    },
+    {
+      label: "keeps CRs inside the shebang",
+      input: Buffer.from("#!node\r --flag\r\nbody\r\n"),
+      expected: Buffer.from("#!node\r --flag\nbody\r\n"),
+      declared: true,
+    },
+    {
+      label: "strips a shebang CR at a rewrite chunk boundary",
+      input: Buffer.from(`#!${"x".repeat(65533)}\r\nbody\r\n`),
+      expected: Buffer.from(`#!${"x".repeat(65533)}\nbody\r\n`),
+      declared: true,
+    },
+  ])("$label", async ({ input, expected = input, declared, mode = 0o644 }) => {
+    const dir = await mkdtemp(join(tmpdir(), "upm-shebang-"));
+    try {
+      const suffix = route === "spooled" ? Buffer.alloc(4 * 1024 * 1024, 0x78) : Buffer.alloc(0);
+      const data = Buffer.concat([input, suffix]);
+      const normalized = Buffer.concat([expected, suffix]);
+      // The manifest arrives last: the bin's bytes can already be hashed and spooled.
+      const manifest = JSON.stringify({ name: "p", bin: declared ? { p: "cli.js" } : {} });
+      const archive = makeTarball([
+        { path: "cli.js", data, mode },
+        { path: "package.json", data: manifest },
+      ]);
+      const tarball = route === "plain tar" ? gunzipSync(archive) : archive;
+      const integrity = hashOf(tarball);
+      const writer = createWriter(dir, { blocking: route === "spooled" });
+      let index;
+      if (route === "unpack" || route === "plain tar") {
+        index = await writer.unpack(integrity, [tarball], false);
+        expect(hashOf(tarball)).toBe(integrity);
+      } else {
+        async function* source() {
+          for (let at = 0; at < tarball.length; at += 65536) yield tarball.subarray(at, at + 65536);
+        }
+        const parts = await writer.split(source(), 2);
+        const file = parts.flatMap((part) => part.files).find((file) => file.path === "cli.js")!;
+        expect(Boolean(file.temp)).toBe(route === "spooled");
+        if (file.temp) expect((await readFile(file.temp)).equals(normalized)).toBe(true);
+        const blobs = await Promise.all(parts.map((part) => writer.writePart(part, false)));
+        index = assemble(integrity, parts, blobs);
+        if (route === "spooled") {
+          const buffered = createWriter(join(dir, "buffered"));
+          expect(index).toEqual(await buffered.unpack(integrity, [tarball], false));
+          expect(await readdir(join(dir, "files"))).not.toContainEqual(
+            expect.stringMatching(/\.tmp$/),
+          );
+        }
+      }
+      const file = index.files.find((file) => file.path === "cli.js")!;
+      expect((await readFile(writer.blobPath(file.blob))).equals(normalized)).toBe(true);
+      expect(writer.blobPath(file.blob)).toBe(
+        writer.contentPath(hashOf(normalized), declared || (mode & 0o111) !== 0),
+      );
+      expect(file.size).toBe(normalized.length);
+      expect(index.unpackedSize).toBe(normalized.length + Buffer.byteLength(manifest));
+      expect(index.integrity).toBe(integrity);
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+});
+
+describe("spooled bin normalization", () => {
+  const prefix = Buffer.from('#!/usr/bin/env node\r\nconsole.log("hello")\r\n');
+  const body = Buffer.alloc(4 * 1024 * 1024, 0x78);
+  const data = Buffer.concat([prefix, body]);
+  const normalized = Buffer.concat([
+    Buffer.from('#!/usr/bin/env node\nconsole.log("hello")\r\n'),
+    body,
+  ]);
+  const tarball = gunzipSync(
+    makeTarball([
+      { path: "cli.js", data },
+      { path: "package.json", data: '{"name":"p","bin":{"p":"cli.js"}}' },
+    ]),
+  );
+
+  async function* source() {
+    // One chunk ends after #, one after !, and another after the shebang CR.
+    const cuts = [0, 513, 514, 512 + prefix.indexOf(0x0a), tarball.length];
+    for (let i = 1; i < cuts.length; i++) yield tarball.subarray(cuts[i - 1], cuts[i]);
+  }
+
+  it("handles #! and CRLF split across source chunks", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "upm-spool-shebang-"));
+    try {
+      const writer = createWriter(dir, { blocking: true });
+      const integrity = hashOf(tarball);
+      const parts = await writer.split(source(), 1);
+      const blobs = await Promise.all(parts.map((part) => writer.writePart(part, false)));
+      const index = assemble(integrity, parts, blobs);
+      const file = index.files.find((file) => file.path === "cli.js")!;
+      expect((await readFile(writer.blobPath(file.blob))).equals(normalized)).toBe(true);
+      expect(writer.blobPath(file.blob)).toBe(writer.contentPath(hashOf(normalized), true));
+      expect(file.size).toBe(normalized.length);
+      expect(hashOf(tarball)).toBe(integrity);
+      expect(await readdir(join(dir, "files"))).not.toContainEqual(expect.stringMatching(/\.tmp$/));
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("removes the original and replacement temps when the replay fails", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "upm-spool-shebang-"));
+    const failed = new Error("Cannot read spool");
+    const reader = vi.spyOn(builtin.fs, "createReadStream").mockImplementation(() => {
+      throw failed;
+    });
+    try {
+      const writer = createWriter(dir, { blocking: true });
+      await expect(writer.split(source(), 1)).rejects.toBe(failed);
+      expect(await readdir(join(dir, "files"))).toEqual([]);
+    } finally {
+      reader.mockRestore();
+      await rm(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
   });
 });

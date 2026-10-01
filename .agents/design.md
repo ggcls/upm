@@ -158,6 +158,9 @@ before that, bytes may exist only in a private temp file (`files/<pid>-*.tmp`, m
 0600, no blob name), removed when the tarball fails and swept by `prune` once its
 process is dead and the grace period is over.
 
+A declared bin's CRLF shebang loses only its terminating CR. The tarball keeps its
+published integrity; each stored file's hash and size describe the normalized bytes.
+
 The store is keyed by integrity alone, so integrity proves bytes, not which package they
 are. An index keeps the name and version its tarball's package.json claims, and a registry
 package is linked only when they are its own, spelled exactly: an alias's are the package

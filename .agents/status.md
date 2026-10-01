@@ -65,10 +65,6 @@ compatibility. Keep this page about open work, not completed implementation step
   Checking a url on every install would cost a request and fail offline; the fix is an explicit
   `upm update <name>` that unlocks a name's entries and resolves them again, which registry
   packages want too. Start at `keep` in `src/api.ts`.
-- **CRLF `#!` line:** npm and pnpm strip a `\r` from a bin's `#!` line on Linux and macOS,
-  so a bin published from Windows still runs; here `env` looks for `node\r` and fails. The
-  fix belongs in the unpack, before the file's hash, for declared bins only; a big file the
-  spool has already hashed needs a rewrite too. Start at `declaredBins` in `src/unpack.ts`.
 - **Symlinked workspace:** when a workspace directory is itself a symlink, its dep links
   are spelled relative to the path linked through, not where they sit, so on Linux and
   macOS they dangle. The test pins that spelling. Start at `linkTop` in `src/link.ts`.
