@@ -172,12 +172,12 @@ These need a scope decision, not just a patch:
   dependent's package.json declares (`mismatch`, `misdeclared` in `src/util.ts`). A package.json
   without a name, and an index or backend entry written before names were kept, cannot say,
   and pass. The edges are the packument's, the declarations the tarball's package.json: a
-  version whose two disagree on an alias fails with EMISMATCH. A peer lands on an alias or a
-  tarball only where the root or a workspace declares one: where a dependency does (a package
-  that aliases `vite` and depends on a plugin that peers on it), the link fails with EMISMATCH.
-  Vouching for a dependency's alias needs every name its package.json declares in the index,
-  since a lock can add an edge no package.json names; `misdeclared` holds only the edges there
-  are. Start at `edgesOf` in `src/link.ts`.
+  version whose two disagree on an alias fails with EMISMATCH. A peer on an alias or a tarball
+  reads its dependent's package.json, which must make it a peer alone (`src/vouch.ts`). One
+  that only a dependency installs also waits for every tarball, then for a walk that reads each
+  reached package.json; an optional dropped from the tree vouches for nothing. Its range is not
+  checked, as no nested edge's is. A peer whose own spec is an alias
+  (`"vite": "npm:rolldown-vite@^7"` in peerDependencies) is asked of the registry by its name.
 - `dedupe` prefers versions already locked; it is not an upgrade strategy. A fresh resolve
   requires removing the lockfile and `node_modules`, whose copy of the lockfile an install
   takes back (`upm update` is the url tarball gap above).

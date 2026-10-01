@@ -147,9 +147,13 @@ tarball's source, a workspace for a workspace spec. Each package's own package.j
 its edges are: the index keeps what it installs under another name or from a url, and an entry
 is linked only when every edge lands on what it declares (`misdeclared`), whatever the lock
 calls a peer. A peer settles on whatever the tree holds under its name, so it may land on an
-alias or a tarball only where the root's or a workspace's own edge put one. An older lock that
-names an alias only by its url is read as that alias, since nothing takes the url's word for
-it either. Without all this, a lockfile could give one package another's tarball.
+alias or a tarball only where the root's or a workspace's own edge put one, or a package's own
+edge that the tops reach through edges each package.json declares: a lock can add an edge no
+package.json names, and nothing else holds one to it. Nor can it make an edge a peer: a peer
+on an alias or a tarball must be one its dependent's package.json declares and does not also
+depend on. An older lock that names an alias only by its url is read as that alias, since
+nothing takes the url's word for it either. Without all this, a lockfile could give one
+package another's tarball.
 
 A store backend (`src/store-backend.ts`) is the one exception, and it is trusted as the store
 is: without the tarball nothing can check a package's file list against its integrity, so

@@ -1595,8 +1595,8 @@ describe("tarball dependencies", () => {
 
 describe("a tarball is the package it is installed as", () => {
   /**
-   * `name@version` on the registry, its tarball's package.json saying `says`; `dependencies`
-   * in both, as a registry serves them.
+   * `name@version` on the registry, its tarball's package.json saying `says`; `dependencies`,
+   * `peerDependencies` and `more` in both, as a registry serves them.
    */
   function publish(
     name: string,
@@ -1604,9 +1604,13 @@ describe("a tarball is the package it is installed as", () => {
     says: object = { name, version },
     dependencies?: Record<string, string>,
     peerDependencies?: Record<string, string>,
+    more: object = {},
   ): string {
     const tgz = makeTarball([
-      { path: "package.json", data: JSON.stringify({ ...says, dependencies, peerDependencies }) },
+      {
+        path: "package.json",
+        data: JSON.stringify({ ...says, dependencies, peerDependencies, ...more }),
+      },
       { path: "index.js", data: `module.exports = ${JSON.stringify(`${name}@${version}`)};\n` },
     ]);
     const path = `/${name}/-/${name.split("/").at(-1)}-${version}.tgz`;
@@ -1617,6 +1621,7 @@ describe("a tarball is the package it is installed as", () => {
       dist: { tarball: `${registry()}${path}`, integrity: hashOf(tgz) },
       ...(dependencies && { dependencies }),
       ...(peerDependencies && { peerDependencies }),
+      ...more,
     };
     docs[`/${name.replace("/", "%2f")}`] = {
       name,
@@ -1971,6 +1976,125 @@ describe("a tarball is the package it is installed as", () => {
       expect(await beside("plugin", "host")).toContain("real-host@1.0.0");
       expect(await beside("plugin", "dep")).toContain("'dep'");
       expect(await beside("other", "dep")).toContain("'dep'");
+    }
+  });
+
+  it("takes a peer on what a dependency's own edge declares, however deep", async () => {
+    publish("real-host", "1.0.0");
+    const tgz = makeTarball([
+      { path: "package.json", data: '{ "name": "host-fork", "version": "1.0.0" }' },
+      { path: "index.js", data: "module.exports = 'host-fork';\n" },
+    ]);
+    files["/host.tgz"] = tgz;
+    const url = `${registry()}/host.tgz`;
+    publish("plugin", "1.0.0", undefined, undefined, { host: "^1" });
+    const soft = { peerDependenciesMeta: { host: { optional: true } } };
+    publish("soft-plugin", "1.0.0", undefined, undefined, { host: "^1" }, soft);
+    const alias = { host: "npm:real-host@^1" };
+    // Each a package that installs host as another package, and a plugin on host beside it.
+    publish("mid-a", "1.0.0", undefined, { ...alias, plugin: "^1" });
+    publish("mid-b", "1.0.0", undefined, { plugin: "^1" }, undefined, {
+      optionalDependencies: alias,
+    });
+    publish("mid-c", "1.0.0", undefined, { ...alias, "soft-plugin": "^1" });
+    publish("mid-d", "1.0.0", undefined, { host: url, plugin: "^1" });
+    // A peer its package.json also lists in devDependencies is still a peer alone.
+    const dev = { devDependencies: { host: "^1" } };
+    publish("dev-plugin", "1.0.0", undefined, undefined, { host: "^1" }, dev);
+    publish("mid-e", "1.0.0", undefined, { ...alias, "dev-plugin": "^1" });
+    publish("outer", "1.0.0", undefined, { "mid-a": "^1" });
+    await mkdir(join(dir, "packages", "w"), { recursive: true });
+    const w = { name: "w", version: "1.0.0", peerDependencies: { host: "^1" } };
+    await writeFile(join(dir, "packages", "w", "package.json"), JSON.stringify(w));
+    // The root's deps, the path from the root to the plugin, and what its host must be.
+    const cases: [object, string[], string, string[]?][] = [
+      [{ "mid-a": "^1" }, ["mid-a", "plugin"], "real-host@1.0.0"],
+      [{ "mid-b": "^1" }, ["mid-b", "plugin"], "real-host@1.0.0"],
+      [{ "mid-c": "^1" }, ["mid-c", "soft-plugin"], "real-host@1.0.0"],
+      [{ "mid-d": "^1" }, ["mid-d", "plugin"], "host-fork"],
+      [{ "mid-e": "^1" }, ["mid-e", "dev-plugin"], "real-host@1.0.0"],
+      [{ outer: "^1" }, ["outer", "mid-a", "plugin"], "real-host@1.0.0"],
+      // A workspace's peer, on what a registry package installs.
+      [{ "mid-a": "^1", w: "workspace:*" }, [], "real-host@1.0.0", ["packages/*"]],
+    ];
+    for (const [deps, path, host, workspaces] of cases) {
+      await locked(deps, () => {}, workspaces ? { workspaces } : {});
+      for (const experimental of [base.experimental, pooled]) {
+        await rm(join(dir, "node_modules"), { recursive: true, force: true });
+        await upm.install({ ...base, frozen: true, experimental });
+        let at = join(dir, "packages", "w", "node_modules", "w");
+        for (const [i, name] of path.entries()) {
+          at = await realpath(join(i === 0 ? join(dir, "node_modules") : dirname(at), name));
+        }
+        expect(await readFile(join(dirname(at), "host", "index.js"), "utf8")).toContain(host);
+      }
+    }
+  });
+
+  it("refuses a peer on an alias that only an edge no package.json declares put there", async () => {
+    publish("host", "1.0.0");
+    publish("plugin", "1.0.0", undefined, undefined, { host: "^1" });
+    publish("mid", "1.0.0", undefined, { plugin: "^1" });
+    const evil = publish("evil", "1.0.0");
+    // A package of evil's own, which does alias host to it, given to mid by the lock alone:
+    // as an edge, or as a peer.
+    const voucher = publish("voucher", "1.0.0", undefined, { host: "npm:evil@^1" });
+    for (const peer of [false, true]) {
+      await locked({ mid: "^1", evil: "^1" }, (packages) => {
+        Object.assign(packages["host@1.0.0"], { name: "evil", integrity: evil });
+        packages["mid@1.0.0"].dependencies.voucher = "1.0.0";
+        if (peer) {
+          packages["mid@1.0.0"].peerDependencies = { voucher: "^1" };
+          packages["mid@1.0.0"].peers = { voucher: "required" };
+        }
+        packages["voucher@1.0.0"] = { integrity: voucher, dependencies: { host: "1.0.0" } };
+      });
+      await refused("EMISMATCH");
+    }
+  });
+
+  it("refuses an edge the lock calls a peer, on what the root or a package aliases", async () => {
+    publish("host", "1.0.0");
+    publish("real-host", "2.0.0");
+    // mid aliases host, as the root may. other depends on host itself, not as a peer, and
+    // soft names it only in peerDependenciesMeta, which makes no peer.
+    publish("mid", "1.0.0", undefined, { host: "npm:real-host@^2" });
+    publish("other", "1.0.0", undefined, { host: "^1" });
+    const meta = { peerDependenciesMeta: { host: { optional: true } } };
+    publish("soft", "1.0.0", undefined, undefined, undefined, meta);
+    for (const deps of [{ mid: "^1" }, { host: "npm:real-host@^2" }]) {
+      for (const lied of ["other", "soft"]) {
+        await locked({ ...deps, [lied]: "^1" }, (packages) => {
+          expect(packages["host@2.0.0"]).toMatchObject({ name: "real-host" });
+          Object.assign(packages[`${lied}@1.0.0`], {
+            dependencies: { host: "2.0.0" },
+            peerDependencies: { host: "^1" },
+            peers: { host: "required" },
+          });
+        });
+        await refused("EMISMATCH");
+      }
+    }
+  });
+
+  it("takes a peer on what a package fetched as a peer declares", async () => {
+    publish("real-host", "1.0.0");
+    publish("plugin", "1.0.0", undefined, undefined, { host: "^1" });
+    // Nothing else installs kit: plugin-kit's peer fetches it.
+    const kit = publish("kit", "1.0.0", undefined, { host: "npm:real-host@^1", plugin: "^1" });
+    publish("plugin-kit", "1.0.0", undefined, undefined, { kit: "^1" });
+    await locked({ "plugin-kit": "^1" }, () => {});
+    const { createStore } = await import("../src/store.ts");
+    for (const experimental of [base.experimental, pooled, base.experimental]) {
+      await rm(join(dir, "node_modules"), { recursive: true, force: true });
+      await upm.install({ ...base, frozen: true, experimental });
+      let at = await realpath(join(dir, "node_modules", "plugin-kit"));
+      for (const name of ["kit", "plugin"]) at = await realpath(join(dirname(at), name));
+      expect(await readFile(join(dirname(at), "host", "index.js"), "utf8")).toContain(
+        "real-host@1.0.0",
+      );
+      // Lost from the store, the package that vouches is fetched again, not taken as a lie.
+      await rm(createStore({ dir: base.store! }).indexPath(kit));
     }
   });
 

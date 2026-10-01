@@ -316,11 +316,16 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
     }
   }
 
+  /** What an edge landed on: the package, or a tarball's source. */
+  function realOf(id: string): string {
+    const dep = resolution.packages[id]!;
+    return dep.source ?? dep.fetchName ?? dep.name;
+  }
+
   /**
-   * The edges a package.json must declare, each to what it landed on: the package, or a
-   * tarball's source. A top's own are `sameTree`'s. A peer settles on whatever the tree holds
-   * under its name, so it is left out only where a top's own edge put something else there:
-   * nothing else ties that to a package.json the lock cannot edit.
+   * The edges a package.json must declare, each to what it landed on. A top's own are
+   * `sameTree`'s. A peer settles on whatever the tree holds under its name: one on an alias or
+   * a tarball is `doubted`.
    */
   function edgesOf(pkg: ResolvedPackage): Record<string, string> {
     const out: Record<string, string> = {};
@@ -328,16 +333,28 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       const id = `${name}@${version}`;
       const dep = resolution.packages[id];
       if (!dep || dep.local !== undefined) continue;
-      const real = dep.source ?? dep.fetchName ?? name;
-      if (
-        Object.hasOwn(pkg.peers ?? {}, name)
-          ? real === name || !reached.has(id)
-          : pkg.local === undefined
-      ) {
+      const real = realOf(id);
+      if (Object.hasOwn(pkg.peers ?? {}, name) ? real === name : pkg.local === undefined) {
         out[name] = real;
       }
     }
     return out;
+  }
+
+  // Peers on an alias or a tarball, by package: the lock may call any edge one (`vouch`).
+  const doubted = new Map<string, Record<string, string>>();
+  let vouching: Promise<ReturnType<typeof import("./vouch.ts").vouched>> | undefined;
+  for (const [id, pkg] of Object.entries(resolution.packages)) {
+    if (!pkg.peers) continue;
+    const deps = allDeps(pkg);
+    for (const name of Object.keys(pkg.peers)) {
+      const to = `${name}@${deps[name]}`;
+      const dep = resolution.packages[to];
+      if (!dep || dep.local !== undefined || realOf(to) === name) continue;
+      let edges = doubted.get(id);
+      if (!edges) doubted.set(id, (edges = {}));
+      edges[name] = to;
+    }
   }
 
   // A workspace has no index to read, and no package.json that could make a peer anything else.
@@ -462,6 +479,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
         for (const [name, version] of Object.entries(allDeps(entry.pkg))) {
           if (name !== entry.pkg.name) await fates.get(`${name}@${version}`);
         }
+        if (doubted.has(id)) await vouch(id, entry);
         if (!pool) {
           if (!asking || (options.awaiting && landed !== asked)) {
             asking = options.pool?.(files) ?? Promise.resolve(undefined);
@@ -479,6 +497,9 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   // Done with the threads: let them go now, so their teardown overlaps the tops, the sweep
   // and the state write rather than following the exit event — 3 ms on `next`.
   pool?.close();
+  for (const id of doubted.keys()) {
+    if (resolution.packages[id]!.local !== undefined) await vouch(id);
+  }
   // Only here, after the fast path: a no-op install never pays a realpath per top.
   const realRoot = await realpath(options.dir);
   // Each top is its own `node_modules`, so they are linked side by side.
@@ -533,6 +554,22 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       if (dep && name !== pkg.name) out.push([name, dep]);
     }
     return out;
+  }
+
+  /** Holds `id`'s doubted peers to `vouched`. */
+  async function vouch(id: string, entry?: Entry): Promise<void> {
+    vouching ??= import("./vouch.ts").then((m) =>
+      // An entry the store lacks fails there as at home, so the install fills the store again.
+      m.vouched(
+        reached,
+        resolution.packages,
+        (at) => wanted.has(at),
+        store,
+        () => Promise.all(fates.values()),
+      ),
+    );
+    const wrong = await (await vouching)(doubted.get(id)!, entry?.index);
+    if (wrong) throw fail(`${id} cannot be installed: ${wrong}`, "EMISMATCH");
   }
 
   /** Built under a temp name and renamed in, so a half-written entry is never mistaken for one. */

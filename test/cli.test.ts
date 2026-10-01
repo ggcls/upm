@@ -1222,11 +1222,12 @@ describe("startup budget", () => {
     // after a failed size check only. 160,062 with a url tarball's bytes taken only from an index
     // that lists the url, `--help` within noise (28.6/28.4 and 35.8/36.5 ms), a warm and a no-op
     // install too. 160,231 with each local tarball's stamp kept with its integrity, `--help`
-    // within noise (66/63 and 138/135 ms).
+    // within noise (66/63 and 138/135 ms). 160,837 with a peer on what a dependency's own alias
+    // installs, the graph walk lazy, `--help` within noise (40.5/40.5 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(160_240);
+    expect(bytes).toBeLessThanOrEqual(160_840);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
@@ -1240,6 +1241,7 @@ describe("startup budget", () => {
       "progress.ts",
       "verify.ts",
       "tree-lock.ts",
+      "vouch.ts",
     ];
     for (const name of lazy) {
       expect(modules.has(name)).toBe(false);
