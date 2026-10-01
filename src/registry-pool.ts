@@ -58,7 +58,7 @@ export interface WorkerData {
 
 /** One question. `pick` is the walk's usual pick: the pinned version first when there is one. */
 export type Asked =
-  | { op: "pick"; spec: Spec; pinned?: string; options?: PickOptions }
+  | { op: "pick"; spec: Spec; pinned?: string; options?: PickOptions; full?: boolean }
   | { op: "pinned"; name: string; version: string }
   | { op: "manifest"; name: string; version: string };
 
@@ -260,11 +260,7 @@ export function createRegistryPool(options: PoolOptions = {}): RegistryPool {
   function here(q: Asked): Promise<Manifest | undefined> {
     if (q.op === "pinned") return local.pinned(q.name, q.version);
     if (q.op === "manifest") return local.manifest(q.name, q.version);
-    return pickHere(q.spec, q.pinned, q.options);
-  }
-
-  function pickHere(spec: Spec, pinned?: string, pick?: PickOptions): Promise<Manifest> {
-    return local.pick!(spec, pinned, pick);
+    return local.pick!(q.spec, q.pinned, q.options, q.full);
   }
 
   function ask(name: string, question: Asked): Promise<Manifest | undefined> {
@@ -311,8 +307,8 @@ export function createRegistryPool(options: PoolOptions = {}): RegistryPool {
     packument: local.packument,
     pinned: (name, version) => ask(name, { op: "pinned", name, version }),
     manifest: (name, version) => ask(name, { op: "manifest", name, version }) as Promise<Manifest>,
-    pick: (spec, pinned, options) =>
-      ask(spec.fetchName, { op: "pick", spec, pinned, options }) as Promise<Manifest>,
+    pick: (spec, pinned, options, full) =>
+      ask(spec.fetchName, { op: "pick", spec, pinned, options, full }) as Promise<Manifest>,
     close,
   };
 }

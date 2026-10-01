@@ -26,8 +26,10 @@ compatibility. Keep this page about open work, not completed implementation step
   Define an explicit migration or refusal policy rather than deleting user files silently.
   Start at `src/link.ts`.
 - **Missing libc metadata:** abbreviated registry documents can hide a `libc` restriction
-  when a package declares neither `os` nor `cpu`. Test this shape before changing metadata
-  reads; never guess libc from the package name. Start at `needsLibc` in `src/resolve.ts`.
+  when a package declares neither `os` nor `cpu`. An optional dependency's exact pin is read
+  from the full document, so only ranges and other edges miss it. Test this shape before
+  changing metadata reads; never guess libc from the package name. Start at `needsLibc` in
+  `src/resolve.ts`.
 - **Platform support:** CI tests Linux, macOS and Windows. On Windows a directory link is
   an absolute junction, so a moved tree is relinked, not reused. A bin there is cmd-shim's
   `.cmd`, `.ps1` and `sh` trio (`src/shim.ts`), and an argument to a `.cmd` is escaped twice,

@@ -290,6 +290,11 @@ const fat = {
   ...doc,
   versions: { "1.0.0": { ...one, deprecated: "x".repeat(3_000_000) } },
 } satisfies Packument;
+/** Over the full packument's cutoff too. */
+const fatter = {
+  ...doc,
+  versions: { "1.0.0": { ...one, deprecated: "x".repeat(9_000_000) } },
+} satisfies Packument;
 const two = { ...one, version: "2.0.0" } satisfies Manifest;
 const scoped = { ...small, name: "@s/foo" } satisfies Packument;
 const route = (call: Call) => call.url.endsWith("/1.0.0");
@@ -319,16 +324,15 @@ describe("manifest", () => {
   });
 
   it("asks a scoped name's per-version route when the packument is over the cutoff", async () => {
-    const s = stub((call) => (route(call) ? json(one) : json(fat)));
+    const s = stub((call) => (route(call) ? json(one) : json(fatter)));
     const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch });
 
     expect(await registry.manifest("@s/foo", "1.0.0")).toEqual(one);
     expect(urls(s.calls)).toEqual(["/@s%2ffoo", "/@s%2ffoo/1.0.0"]);
   });
 
-  it("starts the route while a document is still being read, once it looks too big", async () => {
-    // A document streamed in 512 KiB pieces, so the read passes the halfway mark with more
-    // to come: the route is asked then, and the abandoned read finds it already answered.
+  it("asks the route once a streamed document passes the cutoff", async () => {
+    // A document streamed in 512 KiB pieces: abandoned at the cutoff for the route.
     const text = JSON.stringify(fat);
     const slow = () => {
       let at = 0;
@@ -361,22 +365,6 @@ describe("manifest", () => {
     release(json(small));
     expect(await found).toEqual(one);
     expect(urls(s.calls)).toEqual(["/@s%2ffoo"]);
-  });
-
-  it("skips the full packument when the abbreviated one `pinned` read says it would be abandoned", async () => {
-    // 1 MB abbreviated: read whole by `pinned`, but the full document is ~2.3x that and
-    // would only be read to the cutoff and dropped for the route. So the route, at once.
-    const wide = {
-      ...doc,
-      versions: { "1.0.0": { ...one, deprecated: "x".repeat(1_000_000) } },
-    } satisfies Packument;
-    const s = stub((call) => (route(call) ? json(one) : json(call.accept === CORGI ? wide : fat)));
-    const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch });
-
-    expect(await registry.pinned("@s/foo", "1.0.0")).toEqual(wide.versions["1.0.0"]);
-    expect(await registry.manifest("@s/foo", "1.0.0")).toEqual(one);
-    expect(urls(s.calls)).toEqual(["/@s%2ffoo", "/@s%2ffoo/1.0.0"]);
-    expect(s.calls.map((call) => call.accept)).toEqual([CORGI, "application/json"]);
   });
 
   it("skips the full packument when the abbreviated one was itself over the cutoff", async () => {
@@ -474,6 +462,50 @@ describe("manifest", () => {
     expect(await codeOf(registry.manifest("foo", "1.0.0"))).toBe("EREGISTRY");
     expect(s.calls).toHaveLength(5); // five tries at the route, nothing else
     expect(s.calls.every(route)).toBe(true);
+  });
+});
+
+describe("pick, full", () => {
+  const pin = parseSpec("@s/foo@1.0.0");
+
+  it("reads an optional pin out of the full packument, which then answers manifest and view", async () => {
+    const s = stub((call) => (route(call) ? json(one) : json(scoped)));
+    const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch });
+
+    expect(await registry.pick!(pin, "1.0.0", undefined, true)).toEqual(one);
+    expect(await registry.manifest("@s/foo", "1.0.0")).toEqual(one);
+    expect((await registry.view("@s/foo")).version("1.0.0")).toEqual(one);
+    expect(urls(s.calls)).toEqual(["/@s%2ffoo"]);
+    expect(s.calls[0]?.accept).toBe("application/json");
+  });
+
+  it("reads a document over half the cutoff whole, without the route", async () => {
+    const big = {
+      ...scoped,
+      versions: { "1.0.0": { ...one, deprecated: "x".repeat(1_500_000) } },
+    } satisfies Packument;
+    const s = stub((call) => (route(call) ? json(one) : json(big)));
+    const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch });
+
+    expect((await registry.pick!(pin, "1.0.0", undefined, true)).deprecated).toBeDefined();
+    expect(urls(s.calls)).toEqual(["/@s%2ffoo"]);
+  });
+
+  it("reads a full packument past the abbreviated cutoff whole", async () => {
+    const s = stub((call) => (route(call) ? json(one) : json(fat)));
+    const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch });
+
+    expect((await registry.pick!(pin, "1.0.0", undefined, true)).deprecated).toBeDefined();
+    expect(urls(s.calls)).toEqual(["/@s%2ffoo"]);
+  });
+
+  it("takes the route for an optional pin whose full packument is past the cutoff", async () => {
+    const s = stub((call) => (route(call) ? json(one) : json(fatter)));
+    const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch });
+
+    expect(await registry.pick!(pin, "1.0.0", undefined, true)).toEqual(one);
+    expect(await registry.manifest("@s/foo", "1.0.0")).toEqual(one);
+    expect(urls(s.calls)).toEqual(["/@s%2ffoo", "/@s%2ffoo/1.0.0"]);
   });
 });
 

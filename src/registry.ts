@@ -27,18 +27,11 @@ const CORGI_REJECT = new Set([400, 406, 415]);
  */
 const HUGE = 2 * 1024 * 1024;
 /**
- * A peek past half the cutoff and still going has its route started now rather than then.
- * Never on slow headers alone: a scoped route is an origin read, 200 ms and up, so a
- * document only late to answer still beats it, and the route would be one more request.
+ * The same for a full packument, which the wire carries 5-8x smaller than it decodes, so a
+ * CDN hit still beats the route well past `HUGE`: `@next/swc-*`, 5.5 MiB decoded and 1 MB
+ * sent, is read whole in ~170 ms, where the cutoff and then the route took two requests.
  */
-const LIKELY_HUGE = HUGE / 2;
-/**
- * How much bigger a full packument is than the abbreviated one, so that an abbreviated
- * document already read says whether the full one is worth starting: past `HUGE / FULL_RATIO`
- * it would be read to the cutoff and abandoned for the route anyway. The median over 94
- * names read in both forms (1.8 for `@esbuild/*`, 2.7 for `@rolldown/binding-*`).
- */
-const FULL_RATIO = 2.3;
+const FULL_HUGE = 8 * 1024 * 1024;
 
 /**
  * Whether one version is cheaper to ask for by its route than to read out of the packument:
@@ -158,9 +151,10 @@ export interface Registry {
   /**
    * The walk's pick in one call: `pinned` first when there is a version to try, then the usual
    * pick. Without it the two are asked in turn. The client's own asks the registry again when
-   * a document kept from an earlier run cannot satisfy the spec.
+   * a document kept from an earlier run cannot satisfy the spec. `full` reads the pinned
+   * version out of the full packument, as `manifest` would, rather than the abbreviated one.
    */
-  pick?(spec: Spec, pinned?: string, options?: PickOptions): Promise<Manifest>;
+  pick?(spec: Spec, pinned?: string, options?: PickOptions, full?: boolean): Promise<Manifest>;
 }
 
 /** Where a name is read from. The lockfile derives tarball urls through one of these. */
@@ -388,12 +382,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
    * no media-type fallback, because the per-version route is behind it and `loadPackument`
    * will do the job properly if the whole document is wanted after all.
    */
-  async function peek(
-    name: string,
-    accept: string,
-    big?: () => void,
-    found?: Found,
-  ): Promise<TextView | undefined> {
+  async function peek(name: string, accept: string, found?: Found): Promise<TextView | undefined> {
     const url = path(name);
     const { doc, use, full } = found ?? kept(name, url, accept);
     const hit = (kept = doc!) => {
@@ -419,7 +408,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
       }
       if (!response.ok && isThrottle(response.status)) signal.throttled();
       if (!response.ok || !response.body) return undefined;
-      const [bytes, size] = await read(response, big);
+      const [bytes, size] = await read(response, accept === FULL ? FULL_HUGE : HUGE);
       if (accept === CORGI) corgiBytes.set(name, size);
       if (bytes === undefined) return undefined;
       return viewOf(url, keep(url, accept, response, bytes));
@@ -428,11 +417,12 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
 
   /**
    * Read a peeked document, or give up on it once it is too big to be the cheap route. The
-   * size comes back either way: past the cutoff it is how far the read got.
+   * size comes back either way: past the cutoff it is how far the read got. The route is not
+   * started before then: a document that ends under the cutoff would make it one more request.
    */
   async function read(
     response: Response,
-    big?: () => void,
+    cutoff: number,
   ): Promise<[Uint8Array | undefined, number]> {
     const reader = (response.body as ReadableStream<Uint8Array>).getReader();
     const chunks: Uint8Array[] = [];
@@ -441,11 +431,7 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (big && size > LIKELY_HUGE) {
-        big();
-        big = undefined;
-      }
-      if (size > HUGE) {
+      if (size > cutoff) {
         await reader.cancel().catch(() => {});
         return [undefined, size];
       }
@@ -454,28 +440,46 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     return [concat(chunks, size), size];
   }
 
-  /** Whether the full packument would only be read to the cutoff and abandoned. */
+  /**
+   * Whether the full packument would only be read to its cutoff and abandoned: the abbreviated
+   * one was, and the full one is 2-3x that.
+   */
   function fullTooBig(name: string): boolean {
-    const bytes = corgiBytes.get(name);
-    return bytes !== undefined && bytes * FULL_RATIO > HUGE;
+    return (corgiBytes.get(name) ?? 0) > HUGE;
   }
 
-  /** A peek that read the whole document is the document; otherwise fetch it properly. */
+  /**
+   * A peek that read the whole document is the document, a full one too: it has every field.
+   * Otherwise fetch it properly.
+   */
   async function loadCorgi(name: string): Promise<TextView> {
-    return (await peeks.get(name)) ?? (await loadPackument(name));
+    return (
+      (await peeks.get(name)) ??
+      (await fullPeeks.get(name)?.catch(() => undefined)) ??
+      (await loadPackument(name))
+    );
   }
 
-  async function loadPinned(name: string, version: string): Promise<Manifest | undefined> {
+  async function loadPinned(
+    name: string,
+    version: string,
+    full = false,
+  ): Promise<Manifest | undefined> {
+    let accept = full ? FULL : CORGI;
+    let memos = full ? fullPeeks : peeks;
     // A document that answers unasked beats any route. One that does not is read only once.
-    const ready = cache && !peeks.has(name) ? kept(name, path(name), CORGI) : undefined;
+    let ready = cache && !memos.has(name) ? kept(name, path(name), accept) : undefined;
+    // Kept abbreviated only, it still answers unasked: `manifest` reads the rest if needed.
+    if (full && ready && !ready.use && !peeks.has(name)) {
+      const corgi = kept(name, path(name), CORGI);
+      if (corgi.use) [accept, memos, ready] = [CORGI, peeks, corgi];
+    }
     if (ready?.use) {
-      const found = (await memo(peeks, name, () => peek(name, CORGI, undefined, ready)))?.version(
-        version,
-      );
+      const found = (await memo(memos, name, () => peek(name, accept, ready)))?.version(version);
       if (found) return found;
     }
     // A document a range asked for has the version, or the route below is right.
-    const known = corgis.get(name) ?? peeks.get(name);
+    const known = (full && fullPeeks.get(name)) || corgis.get(name) || peeks.get(name);
     if (known) {
       const found = (await known.catch(() => undefined))?.version(version);
       if (found) return found;
@@ -487,35 +491,20 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
       const found = await loadedVersion(name, version);
       if (found) return found;
     }
-    const found = await raced(name, version, (early) =>
-      memo(peeks, name, () => peek(name, CORGI, early, ready)),
-    );
+    const doc = await memo(memos, name, () => peek(name, accept, ready));
+    const found = doc?.version(version);
     if (found || first) return found;
     // A version the CDN's copy lacks may be newer than the copy: the route is the origin.
     return await loadedVersion(name, version);
   }
 
   /** `loadPinned`, held to what a pick holds a manifest to: see `filed`. */
-  async function loadFiled(name: string, version: string): Promise<Manifest | undefined> {
-    return filed(await loadPinned(name, version), undefined, version);
-  }
-
-  /** The version out of a peeked document, or off an early route when that answers first. */
-  function raced(
+  async function loadFiled(
     name: string,
     version: string,
-    peeked: (early: () => void) => Promise<TextView | undefined>,
+    full?: boolean,
   ): Promise<Manifest | undefined> {
-    return new Promise((resolve, reject) => {
-      const early = () =>
-        void loadedVersion(name, version).then(
-          (found) => found && resolve(found),
-          () => {},
-        );
-      peeked(early)
-        .then((doc) => doc?.version(version))
-        .then(resolve, reject);
-    });
+    return filed(await loadPinned(name, version, full), undefined, version);
   }
 
   async function loadVersion(name: string, version: string): Promise<Manifest | undefined> {
@@ -544,12 +533,10 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     const found = asked ? await loadedVersion(name, version) : undefined;
     if (found) return found;
     // Not started when the abbreviated document `pinned` read says it would be abandoned.
-    let peeked: TextView | undefined;
-    const fromDoc = fullTooBig(name)
+    const peeked = fullTooBig(name)
       ? undefined
-      : await raced(name, version, (early) =>
-          memo(fullPeeks, name, () => peek(name, FULL, early)).then((doc) => (peeked = doc)),
-        );
+      : await memo(fullPeeks, name, () => peek(name, FULL));
+    const fromDoc = peeked?.version(version);
     // The route once more when the document lacks the version: free where `pinned` found it
     // there, one request where the CDN's copy trails a publish.
     const later = fromDoc ?? (await loadedVersion(name, version));
@@ -609,9 +596,14 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   const view = (name: string) =>
     before === undefined ? corgi(name) : memo(aged, name, () => loadAged(name));
 
-  async function pick(spec: Spec, pinned?: string, options?: PickOptions): Promise<Manifest> {
+  async function pick(
+    spec: Spec,
+    pinned?: string,
+    options?: PickOptions,
+    full?: boolean,
+  ): Promise<Manifest> {
     const name = spec.fetchName;
-    const found = pinned === undefined ? undefined : await loadFiled(name, pinned);
+    const found = pinned === undefined ? undefined : await loadFiled(name, pinned, full);
     if (found) return found;
     // A tag written out, `foo@latest`, is what it points at now, as npm reads it: revalidated.
     if (spec.type === "tag" && cache?.mode === "revalidate") recheck(name);
@@ -664,7 +656,8 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     packument: (name) => again(name, async () => (await view(name)).whole()),
     manifest: (name, version) => again(name, () => loadManifest(name, version)),
     pinned: (name, version) => again(name, () => loadFiled(name, version)),
-    pick: (spec, pinned, options) => again(spec.fetchName, () => pick(spec, pinned, options)),
+    pick: (spec, pinned, options, full) =>
+      again(spec.fetchName, () => pick(spec, pinned, options, full)),
   };
 }
 

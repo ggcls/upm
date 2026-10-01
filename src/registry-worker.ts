@@ -12,7 +12,7 @@ import type { Manifest } from "./types.ts";
 async function answer(registry: Registry, q: Asked): Promise<Manifest | undefined> {
   if (q.op === "pinned") return await registry.pinned(q.name, q.version);
   if (q.op === "manifest") return await registry.manifest(q.name, q.version);
-  return await registry.pick!(q.spec, q.pinned, q.options);
+  return await registry.pick!(q.spec, q.pinned, q.options, q.full);
 }
 
 const port = builtin.workers.parentPort;

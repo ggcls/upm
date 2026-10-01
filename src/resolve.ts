@@ -238,11 +238,11 @@ export async function resolveTree(
 
   // Memoized on the fetched name and range, not the dep name: the same range never resolves
   // twice, and two aliases of one package share the pick with each other and with a plain dep.
-  function pick(spec: Spec, fresh = false): Promise<Manifest> {
+  function pick(spec: Spec, fresh = false, optional = false): Promise<Manifest> {
     const key = `${fresh ? "!" : ""}${spec.fetchName}@${spec.fetchSpec}`;
     let hit = picks.get(key);
     if (!hit) {
-      hit = limit(() => fetchManifest(spec, fresh));
+      hit = limit(() => fetchManifest(spec, fresh, optional));
       hit.catch(() => {}); // a required edge reports it; an optional one may never await
       picks.set(key, hit);
     }
@@ -253,14 +253,16 @@ export async function resolveTree(
    * A pinned spec wants one version, so the registry gets to answer for that version alone —
    * by whichever of the per-version route and the packument is cheaper for the name (see
    * `registry.ts`). Anything the registry cannot answer that way falls through to the
-   * packument, so the errors stay the packument's.
+   * packument, so the errors stay the packument's. An optional pin is read out of the full
+   * packument: it is most often a platform build, and a linux one needs the `libc` only the
+   * full document has, so one read answers both, as pnpm does.
    */
-  async function fetchManifest(spec: Spec, fresh: boolean): Promise<Manifest> {
+  async function fetchManifest(spec: Spec, fresh: boolean, optional: boolean): Promise<Manifest> {
     // `=1.2.3` and `v1.2.3` are exact specs but never registry paths. Deduping pins the same
     // way: the locked version it prefers is one the registry answers for by version.
     const exact = spec.type === "version" ? parse(spec.fetchSpec)?.version : undefined;
     const wanted = exact ?? (options.dedupe && !fresh ? kept(spec) : undefined);
-    if (registry.pick) return await registry.pick(spec, wanted);
+    if (registry.pick) return await registry.pick(spec, wanted, undefined, optional);
     const found = wanted === undefined ? undefined : await registry.pinned(spec.fetchName, wanted);
     return found ?? pickManifest(await registry.view(spec.fetchName), spec);
   }
@@ -570,7 +572,7 @@ export async function resolveTree(
         edges.get(from)?.push({ name: spec.name, version, optional });
         return;
       }
-      const m = await pick(spec, fresh);
+      const m = await pick(spec, fresh, optional);
       // No os/cpu/libc test here: that is filterPlatform's job, at install time.
       // Installed under the declared name, so an alias is its own node and the linker,
       // the lockfile and the store key all keep `name@version` as the one identity.
