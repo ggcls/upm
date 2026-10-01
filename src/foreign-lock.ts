@@ -4,8 +4,9 @@
 // stripped. Loaded only when a project has one of these files and no `upm.lock`.
 import { normalizeBin } from "./normalize-bin.ts";
 import { builtin } from "./builtin.ts";
-import { checkLockfile, LOCKFILE } from "./lock.ts";
-import type { ForeignFile, LockEntry, Lockfile } from "./lock.ts";
+import { checkLockfile, LOCKFILE, sameTree } from "./lock.ts";
+import type { ForeignFile, LockEntry, Lockfile, TopOverrides } from "./lock.ts";
+import { readOverrides, valuesFor } from "./overrides.ts";
 import { tarballUrl } from "./registry.ts";
 import type { BaseFor } from "./registry.ts";
 import { declaredSpecs, declaredWorkspaces } from "./resolve.ts";
@@ -67,15 +68,16 @@ const MANAGERS: Record<ForeignFile, string> = {
 export function loadForeign(
   file: ForeignFile,
   text: string | undefined,
-  project: { manifest: RootManifest; workspaces: unknown[] },
+  project: { manifest: RootManifest; workspaces: unknown[]; pnpm?: { overrides: unknown } },
   baseFor: BaseFor,
 ): ForeignLock {
-  const { manifest, workspaces } = project;
+  const { manifest, workspaces, pnpm } = project;
   if (declaredWorkspaces(manifest) || workspaces.length > 0) {
     throw fail(`upm does not read workspaces from ${file}: delete it to switch to upm`);
   }
   if (text === undefined) throw fail(`cannot read ${file}`);
-  return readForeign(file, text, manifest, baseFor);
+  const { overrides } = readOverrides(manifest, pnpm?.overrides);
+  return readForeign(file, text, manifest, baseFor, valuesFor(overrides));
 }
 
 /** A command that would write `upm.lock` next to another manager's lockfile. */
@@ -86,11 +88,13 @@ export function beside(file: ForeignFile, command: string): Error {
   );
 }
 
+/** `values` gives the overrides that reach a root edge, which may pin it outside its range. */
 export function readForeign(
   file: ForeignFile,
   text: string,
   manifest: RootManifest,
   baseFor: BaseFor,
+  values: TopOverrides["values"] = () => [],
 ): ForeignLock {
   let source: Source;
   try {
@@ -99,18 +103,40 @@ export function readForeign(
     if ((error as { code?: string }).code === "ELOCK") throw error;
     throw fail(`${file} cannot be read: ${(error as Error).message}`);
   }
-  holdTo(file, source, manifest);
-  return build(file, source, manifest, baseFor);
+  holdTo(file, source, manifest, (name) => values(undefined, name));
+  const read = build(file, source, manifest, baseFor);
+  // Each pin held as upm.lock's are: to the version, and the package, package.json asks for.
+  const { lock } = read;
+  const fits = (dependencies: Record<string, string>) =>
+    sameTree({ ...lock, root: { ...lock.root, dependencies } }, manifest, [], {
+      overrides: {},
+      values,
+    });
+  const pins = lock.root.dependencies;
+  if (!fits(pins)) {
+    const name = Object.keys(pins).find((name) => !fits({ [name]: pins[name]! }));
+    const what = "a version or package that package.json does not allow";
+    throw fail(`${file} locks ${name} to ${what}: ${redo(file)}`);
+  }
+  return read;
 }
+
+const redo = (file: ForeignFile) => `run ${MANAGERS[file]} install, or delete it to switch to upm`;
 
 /**
  * Refuse a file that was not written for this package.json: every name it declares at the root
- * must have the range package.json gives it, and no more names. Managers file a name declared
- * twice under different groups (optional wins in all three, pnpm puts dependencies over dev),
- * so the groups kept are package.json's. pnpm also records the root's own peers, which upm,
- * like npm without a consumer, does not install.
+ * must have the range package.json gives it, or that of an override that reaches it (pnpm writes
+ * that one), and no more names. Managers file a name declared twice under different groups
+ * (optional wins in all three, pnpm puts dependencies over dev), so the groups kept are
+ * package.json's. pnpm also records the root's own peers, which upm, like npm without a
+ * consumer, does not install.
  */
-function holdTo(file: ForeignFile, source: Source, manifest: RootManifest): void {
+function holdTo(
+  file: ForeignFile,
+  source: Source,
+  manifest: RootManifest,
+  over: (name: string) => string[],
+): void {
   const extra = manifest as {
     patchedDependencies?: object;
     pnpm?: { patchedDependencies?: object };
@@ -118,18 +144,16 @@ function holdTo(file: ForeignFile, source: Source, manifest: RootManifest): void
   if (extra.patchedDependencies || extra.pnpm?.patchedDependencies) {
     throw fail(`upm does not apply the patches package.json names`);
   }
-  const stale = () =>
-    fail(
-      `${file} is out of date with package.json: run ${MANAGERS[file]} install, or delete it to switch to upm`,
-    );
+  const stale = () => fail(`${file} is out of date with package.json: ${redo(file)}`);
   const declared = flat(declaredSpecs(manifest));
   const recorded = flat(source.specs);
   for (const [name, range] of Object.entries(recorded)) {
-    if (declared[name] === range) continue;
-    if (name in declared || manifest.peerDependencies?.[name] !== range) throw stale();
+    const has = Object.hasOwn(declared, name);
+    if (has && (declared[name] === range || over(name).includes(range))) continue;
+    if (has || manifest.peerDependencies?.[name] !== range) throw stale();
     delete source.root[name];
   }
-  if (Object.keys(declared).some((name) => !(name in recorded))) throw stale();
+  if (Object.keys(declared).some((name) => !Object.hasOwn(recorded, name))) throw stale();
   if (source.overrides !== undefined) {
     const given = (manifest as { overrides?: object; resolutions?: object }).overrides;
     const resolutions = (manifest as { resolutions?: object }).resolutions;
@@ -276,7 +300,7 @@ function withEdges(
     const version = target(dep);
     if (version === null) continue;
     // Missing is kept, to fail the closure check by name; a missing optional just did not install.
-    if (dep in optional) {
+    if (Object.hasOwn(optional, dep)) {
       if (version !== undefined) node.optionalDependencies[dep] = version;
     } else node.dependencies[dep] = version ?? "";
   }
@@ -285,7 +309,8 @@ function withEdges(
   node.peerDependencies = peers;
   node.peers = {};
   for (const peer of Object.keys(peers)) {
-    if (peer in node.dependencies || peer in node.optionalDependencies) continue; // its own edge
+    const own = Object.hasOwn(node.dependencies, peer);
+    if (own || Object.hasOwn(node.optionalDependencies, peer)) continue; // its own edge
     const kind: PeerKind = entry.peerDependenciesMeta?.[peer]?.optional ? "optional" : "required";
     node.peers[peer] = kind;
     const version = target(peer);
@@ -384,7 +409,7 @@ function readPnpm(text: string): Source {
       for (const peer of Object.keys(ranges)) {
         const kind: PeerKind = meta[peer]?.optional ? "optional" : "required";
         node.peers[peer] = kind;
-        if (kind === "optional" && peer in node.dependencies) {
+        if (kind === "optional" && Object.hasOwn(node.dependencies, peer)) {
           node.optionalDependencies[peer] = node.dependencies[peer]!;
           delete node.dependencies[peer];
         }

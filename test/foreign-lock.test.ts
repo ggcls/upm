@@ -271,6 +271,74 @@ snapshots:
     expect(() => read("bun.lock", text({ b: "2.0.0" }), manifest)).toThrow("out of date");
     expect(() => read("bun.lock", text({}), manifest)).toThrow("out of date");
   });
+
+  it("refuses a file that leaves out a name every object has, or hides one in __proto__", () => {
+    const a = { version: "1.0.0", integrity: "sha512-a" };
+    const packages = { "node_modules/a": a };
+    const missing = JSON.stringify({
+      lockfileVersion: 3,
+      packages: { "": { dependencies: { a: "^1" } }, ...packages },
+    });
+    const constructor = { dependencies: { a: "^1", constructor: "^1" } };
+    expect(() => read("package-lock.json", missing, constructor)).toThrow("out of date");
+    // JSON.parse keeps `__proto__` as a key, but copying the group sets it as a prototype.
+    const hidden = `{"lockfileVersion":3,"packages":{"":{"dependencies":{"a":"^1","__proto__":{"b":"^1"}}},"node_modules/a":${JSON.stringify(a)}}}`;
+    const both = { dependencies: { a: "^1", b: "^1" } };
+    expect(() => read("package-lock.json", hidden, both)).toThrow("out of date");
+  });
+
+  it("reads a dependency or peer named as a property every object has as any other", () => {
+    const text = (deps: object) =>
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          "": { dependencies: { a: "^1" } },
+          "node_modules/a": {
+            version: "1.0.0",
+            integrity: "sha512-a",
+            dependencies: { constructor: "^1" },
+            peerDependencies: { toString: "^1" },
+          },
+          ...deps,
+        },
+      });
+    const manifest = { dependencies: { a: "^1" } };
+    expect(() => read("package-lock.json", text({}), manifest)).toThrow(
+      "a@1.0.0 depends on constructor, which package-lock.json has from no registry",
+    );
+    const c = { version: "1.0.0", integrity: "sha512-c" };
+    const { lock } = readForeign(
+      "package-lock.json",
+      text({ "node_modules/constructor": c, "node_modules/toString": c }),
+      manifest,
+      npmjs,
+    );
+    expect(lock.packages["a@1.0.0"]).toMatchObject({
+      dependencies: { constructor: "1.0.0", toString: "1.0.0" },
+      peers: { toString: "required" },
+    });
+    // pnpm: an optional peer, settled or not.
+    const pnpm = (settled: string) => `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      a: {specifier: ^1, version: 1.0.0}
+packages:
+  a@1.0.0:
+    resolution: {integrity: sha512-a}
+    peerDependencies: {constructor: ^1}
+    peerDependenciesMeta: {constructor: {optional: true}}
+  constructor@1.0.0: {resolution: {integrity: sha512-c}}
+snapshots:
+  a@1.0.0: {${settled}}
+  constructor@1.0.0: {}
+`;
+    const alone = readForeign("pnpm-lock.yaml", pnpm(""), manifest, npmjs).lock;
+    expect(alone.packages["a@1.0.0"]!.optionalDependencies).toBeUndefined();
+    const settled = "dependencies: {constructor: 1.0.0}";
+    const peer = readForeign("pnpm-lock.yaml", pnpm(settled), manifest, npmjs).lock;
+    expect(peer.packages["a@1.0.0"]!.optionalDependencies).toEqual({ constructor: "1.0.0" });
+  });
 });
 
 // A registry that serves two tarballs and fails the test on any metadata request.
@@ -281,6 +349,28 @@ const tool = makeTarball([
 const dep = makeTarball([{ path: "index.js", data: "module.exports = 1;\n" }]);
 const TOOL = hashOf(tool);
 const DEP = hashOf(dep);
+
+/** A package whose `index.js` says which one it is, as its tarball names it. */
+function pkg(name: string, version: string, dependencies?: object) {
+  const manifest = JSON.stringify({ name, version, dependencies });
+  const data = makeTarball([
+    { path: "package.json", data: manifest },
+    { path: "index.js", data: `module.exports = "${name}@${version}";\n` },
+  ]);
+  return { url: `/${name}/-/${name}-${version}.tgz`, data, integrity: hashOf(data) };
+}
+// pkg-a@1.1.0 depends on pkg-b, and evil is on the same registry as both.
+const A1 = pkg("pkg-a", "1.1.0", { "pkg-b": "^1.0.0" });
+const A2 = pkg("pkg-a", "2.0.0");
+const B = pkg("pkg-b", "1.0.0");
+const EVIL = pkg("evil", "1.0.0");
+const REAL = pkg("real", "1.0.0");
+
+const SERVED = new Map<string, Uint8Array>([
+  ["/tool/-/tool-1.0.0.tgz", tool],
+  ["/dep/-/dep-1.0.0.tgz", dep],
+  ...[A1, A2, B, EVIL, REAL].map((p) => [p.url, p.data] as [string, Uint8Array]),
+]);
 
 const MANIFEST = { name: "demo", dependencies: { tool: "^1.0.0" } };
 
@@ -362,8 +452,7 @@ beforeEach(async () => {
   asked = [];
   server = createServer((request, response) => {
     const url = request.url ?? "";
-    const body =
-      url === "/tool/-/tool-1.0.0.tgz" ? tool : url === "/dep/-/dep-1.0.0.tgz" ? dep : undefined;
+    const body = SERVED.get(url);
     if (!body) asked.push(url);
     response.writeHead(body ? 200 : 404);
     response.end(body && Buffer.from(body));
@@ -478,6 +567,290 @@ describe("a project another manager locked", () => {
     const { lock } = readForeign("package-lock.json", LOCKS["package-lock.json"], MANIFEST, npmjs);
     await writeFile(join(dir, "upm.lock"), formatLockfile(lock));
     expect(await upm.install({ ...base, frozen: true })).toMatchObject({ packages: 2 });
+    expect(asked).toEqual([]);
+  });
+});
+
+// Only the lockfile is the attacker's: package.json, the registry and the store are not.
+describe("a lockfile edited to give a package another's tarball", () => {
+  const url = (p: { url: string }) => `${base.registry}${p.url}`;
+  const npm = (packages: object, root: object = { "pkg-a": "^1.0.0" }) =>
+    JSON.stringify({ lockfileVersion: 3, packages: { "": { dependencies: root }, ...packages } });
+  const pnpm = (pin: string, packages: string, snapshots: string) => `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      pkg-a: {specifier: ^1.0.0, version: ${pin}}
+packages:
+${packages}
+snapshots:
+${snapshots}
+`;
+  const bun = (packages: object, overrides?: object) =>
+    JSON.stringify({
+      lockfileVersion: 1,
+      workspaces: { "": { dependencies: { "pkg-a": "^1.0.0" } } },
+      ...(overrides && { overrides }),
+      packages,
+    });
+  const nested = { "pkg-b": "^1.0.0" };
+  const a1 = () => ({
+    version: "1.1.0",
+    resolved: url(A1),
+    integrity: A1.integrity,
+    dependencies: nested,
+  });
+  const install = async (file: ForeignFile, text: string, manifest: object) => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ name: "demo", ...manifest }));
+    await writeFile(join(dir, file), text);
+  };
+  const which = (name: string) =>
+    readFile(join(dir, "node_modules", name, "index.js"), "utf8").then(
+      (text) => /"(.*)"/.exec(text)?.[1],
+      () => undefined,
+    );
+  const DEPS = { dependencies: { "pkg-a": "^1.0.0" } };
+
+  const swaps: [string, ForeignFile, () => string][] = [
+    [
+      "evil's url and integrity",
+      "package-lock.json",
+      () =>
+        npm({
+          "node_modules/pkg-a": {
+            version: "1.0.0",
+            resolved: url(EVIL),
+            integrity: EVIL.integrity,
+          },
+        }),
+    ],
+    [
+      "evil's url, integrity and name",
+      "package-lock.json",
+      () =>
+        npm({
+          "node_modules/pkg-a": {
+            name: "evil",
+            version: "1.0.0",
+            resolved: url(EVIL),
+            integrity: EVIL.integrity,
+          },
+        }),
+    ],
+    [
+      "a version its range does not allow",
+      "package-lock.json",
+      () =>
+        npm({
+          "node_modules/pkg-a": { version: "2.0.0", resolved: url(A2), integrity: A2.integrity },
+        }),
+    ],
+    [
+      "evil as an alias",
+      "pnpm-lock.yaml",
+      () =>
+        pnpm(
+          "evil@1.0.0",
+          `  evil@1.0.0: {resolution: {integrity: ${EVIL.integrity}}}`,
+          "  evil@1.0.0: {}",
+        ),
+    ],
+    [
+      "evil's tarball and integrity",
+      "pnpm-lock.yaml",
+      () =>
+        pnpm(
+          "1.0.0",
+          `  pkg-a@1.0.0: {resolution: {integrity: ${EVIL.integrity}, tarball: '${url(EVIL)}'}}`,
+          "  pkg-a@1.0.0: {}",
+        ),
+    ],
+    [
+      "a version its range does not allow",
+      "pnpm-lock.yaml",
+      () =>
+        pnpm(
+          "2.0.0",
+          `  pkg-a@2.0.0: {resolution: {integrity: ${A2.integrity}}}`,
+          "  pkg-a@2.0.0: {}",
+        ),
+    ],
+    [
+      "evil as an alias",
+      "bun.lock",
+      () => bun({ "pkg-a": ["evil@1.0.0", "", {}, EVIL.integrity] }),
+    ],
+    [
+      "a version its range does not allow",
+      "bun.lock",
+      () => bun({ "pkg-a": ["pkg-a@2.0.0", "", {}, A2.integrity] }),
+    ],
+    [
+      "a version only an override of another name would allow",
+      "bun.lock",
+      () => bun({ "pkg-a": ["pkg-a@2.0.0", "", {}, A2.integrity] }, { "x>pkg-a": "2.0.0" }),
+    ],
+  ];
+  for (const [what, file, text] of swaps) {
+    it(`refuses ${file} pinning pkg-a to ${what}`, async () => {
+      const overrides = what.includes("override") ? { overrides: { "x>pkg-a": "2.0.0" } } : {};
+      await install(file, text(), { ...DEPS, ...overrides });
+      for (const options of [base, { ...base, frozen: true }]) {
+        await expect(upm.install(options)).rejects.toMatchObject({
+          code: "ELOCK",
+          message: expect.stringContaining(
+            `${file} locks pkg-a to a version or package that package.json does not allow`,
+          ),
+        });
+      }
+      expect(await which("pkg-a")).toBeUndefined();
+      expect(await exists("upm.lock")).toBe(false);
+    });
+  }
+
+  // A nested edge is held at link time, by its dependent's own package.json.
+  const deep: [ForeignFile, () => string][] = [
+    [
+      "package-lock.json",
+      () =>
+        npm({
+          "node_modules/pkg-a": a1(),
+          "node_modules/pkg-b": {
+            version: "1.0.0",
+            resolved: url(EVIL),
+            integrity: EVIL.integrity,
+          },
+        }),
+    ],
+    [
+      "pnpm-lock.yaml",
+      () =>
+        pnpm(
+          "1.1.0",
+          `  pkg-a@1.1.0: {resolution: {integrity: ${A1.integrity}}}\n  evil@1.0.0: {resolution: {integrity: ${EVIL.integrity}}}`,
+          "  pkg-a@1.1.0:\n    dependencies:\n      pkg-b: evil@1.0.0\n  evil@1.0.0: {}",
+        ),
+    ],
+    [
+      "bun.lock",
+      () =>
+        bun({
+          "pkg-a": ["pkg-a@1.1.0", "", { dependencies: nested }, A1.integrity],
+          "pkg-b": ["evil@1.0.0", "", {}, EVIL.integrity],
+        }),
+    ],
+  ];
+  for (const [file, text] of deep) {
+    it(`refuses ${file} giving pkg-a's own pkg-b evil's tarball`, async () => {
+      await install(file, text(), DEPS);
+      for (const options of [base, { ...base, frozen: true }]) {
+        await expect(upm.install(options)).rejects.toMatchObject({
+          code: "EMISMATCH",
+          message: expect.stringContaining("its package.json makes pkg-b pkg-b, not evil"),
+        });
+      }
+    });
+  }
+
+  // The shapes each manager wrote for this package.json, an alias and an override included.
+  it("installs package-lock.json with an alias and a $name override", async () => {
+    const text = npm(
+      {
+        "node_modules/pkg-a": a1(),
+        "node_modules/pkg-b": { version: "1.0.0", resolved: url(B), integrity: B.integrity },
+        "node_modules/str": {
+          name: "real",
+          version: "1.0.0",
+          resolved: url(REAL),
+          integrity: REAL.integrity,
+        },
+      },
+      { "pkg-a": "^1.0.0", str: "npm:real@^1" },
+    );
+    const dependencies = { "pkg-a": "^1.0.0", str: "npm:real@^1" };
+    await install("package-lock.json", text, { dependencies, overrides: { "pkg-a": "$pkg-a" } });
+    expect(await upm.install({ ...base, frozen: true })).toMatchObject({ packages: 3 });
+    expect(await which("pkg-a")).toBe("pkg-a@1.1.0");
+    expect(await which("str")).toBe("real@1.0.0");
+    expect(asked).toEqual([]);
+  });
+
+  it("installs pnpm-lock.yaml with an alias, under pnpm-workspace.yaml's override", async () => {
+    // pnpm writes the override's value as the root's specifier.
+    const text = `lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+overrides:
+  pkg-a: 2.0.0
+
+importers:
+
+  .:
+    dependencies:
+      pkg-a:
+        specifier: 2.0.0
+        version: 2.0.0
+      str:
+        specifier: npm:real@^1
+        version: real@1.0.0
+
+packages:
+
+  pkg-a@2.0.0:
+    resolution: {integrity: ${A2.integrity}}
+
+  real@1.0.0:
+    resolution: {integrity: ${REAL.integrity}}
+
+snapshots:
+
+  pkg-a@2.0.0: {}
+
+  real@1.0.0: {}
+`;
+    const dependencies = { "pkg-a": "^1.0.0", str: "npm:real@^1" };
+    await install("pnpm-lock.yaml", text, { dependencies });
+    await expect(upm.install(base)).rejects.toMatchObject({ code: "ELOCK" });
+    await writeFile(join(dir, "pnpm-workspace.yaml"), "overrides:\n  pkg-a: 2.0.0\n");
+    expect(await upm.install({ ...base, frozen: true })).toMatchObject({ packages: 2 });
+    expect(await which("pkg-a")).toBe("pkg-a@2.0.0");
+    expect(await which("str")).toBe("real@1.0.0");
+    // Another override's value is not the one the file recorded.
+    await writeFile(join(dir, "pnpm-workspace.yaml"), "overrides:\n  pkg-a: 2.0.1\n");
+    await expect(upm.install(base)).rejects.toMatchObject({ code: "ELOCK" });
+    expect(asked).toEqual([]);
+  });
+
+  it("installs bun.lock with an alias, under an override", async () => {
+    const text = `{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "demo",
+      "dependencies": {
+        "pkg-a": "^1.0.0",
+        "str": "npm:real@^1",
+      },
+    },
+  },
+  "overrides": {
+    "pkg-a": "2.0.0",
+  },
+  "packages": {
+    "pkg-a": ["pkg-a@2.0.0", "${url(A2)}", {}, "${A2.integrity}"],
+
+    "str": ["real@1.0.0", "${url(REAL)}", {}, "${REAL.integrity}"],
+  }
+}
+`;
+    const dependencies = { "pkg-a": "^1.0.0", str: "npm:real@^1" };
+    await install("bun.lock", text, { dependencies, overrides: { "pkg-a": "2.0.0" } });
+    expect(await upm.install({ ...base, frozen: true })).toMatchObject({ packages: 2 });
+    expect(await which("pkg-a")).toBe("pkg-a@2.0.0");
+    expect(await which("str")).toBe("real@1.0.0");
     expect(asked).toEqual([]);
   });
 });

@@ -117,14 +117,15 @@ These need a scope decision, not just a patch:
   memory when there is no `upm.lock` (`src/foreign-lock.ts`), and never written: whatever needs a
   resolve is refused, not saved to a new `upm.lock`. Not read: yarn (berry has no tarball
   integrity, v1 no bins or platform lists: a registry request per package), workspaces,
-  patches, git and file dependencies. bun records no libc and writes an os or cpu it does not
-  know as `"none"`, so those builds install as unrestricted; pnpm records only `hasBin`, so
-  those bins are read out of the store before the state hash (a package that names its bins
-  only by `directories.bin` gets none). A `name@version` held with two peer sets is folded onto
-  the highest. Staleness is checked on the root's ranges and bun's overrides; pnpm's
-  overrides, which may live in `pnpm-workspace.yaml`, are not compared. `yarn.lock`,
-  `bun.lockb` and `npm-shrinkwrap.json` are not looked for, so such a project still resolves
-  and writes `upm.lock`: decide whether to refuse there too. Start at `src/foreign-lock.ts`.
+  patches, git, file and tarball url dependencies. bun records no libc and writes an os or
+  cpu it does not know as `"none"`, so those builds install as unrestricted; pnpm records
+  only `hasBin`, so those bins are read out of the store before the state hash (a package
+  that names its bins only by `directories.bin` gets none). A `name@version` held with two
+  peer sets is folded onto the highest. Staleness is checked on the root's ranges and pins
+  and on bun's overrides; the `overrides` map pnpm records is not compared, though a root
+  specifier it wrote from one of the project's overrides is taken. `yarn.lock`, `bun.lockb`
+  and `npm-shrinkwrap.json` are not looked for, so such a project still resolves and writes
+  `upm.lock`: decide whether to refuse there too. Start at `src/foreign-lock.ts`.
 - Workspaces are direct-only and whole-tree. Left out on purpose: `install -w` and any other
   filtered install (one state file describes one tree), hoisting to the root, a workspace capturing a
   registry package's transitive edge (npm links one; here a `.upm` entry never points at a

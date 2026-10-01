@@ -31,6 +31,9 @@ Another manager's lockfile is read, never written, and no `upm.lock` appears bes
 A command that would change the tree there is refused: writing the choice anywhere else
 would leave two lockfiles that disagree. What such a file cannot say is taken from the
 tarball, never guessed; what it holds that upm cannot install is refused, not dropped.
+Its root pins are held to package.json as `upm.lock`'s are (`sameTree`), an override's value
+included, before anything is fetched: it is as easy to edit, and a pin to another package is
+the one edge no package.json at link time would refuse.
 
 ## A workspace is a leaf, never a store entry
 
