@@ -1,4 +1,4 @@
-// The status bar. Left: the panel switches, problems then requests, and a deprecation. Right:
+// The status bar. Left: the panel switches, problems, requests then storage, and a deprecation. Right:
 // the run's state, what it found, the package then its tree, then the download total and the
 // registry.
 import { useMemo, useState, type ReactNode } from "react";
@@ -16,6 +16,7 @@ export function StatusBar(props: {
   problems: Problem[];
   panel: PanelTab | undefined;
   togglePanel: (tab: PanelTab) => void;
+  opfs: number | undefined;
   registry: string;
   setRegistry: (url: string) => void;
 }) {
@@ -68,6 +69,18 @@ export function StatusBar(props: {
         >
           {loading ? <Pulse /> : <Icon name="requests" className="size-3" />}
           {requests.length} <span className="hidden sm:inline">requests</span>
+        </Item>
+        <Item
+          title="Toggle the storage panel: what this browser keeps on OPFS"
+          active={panel === "storage"}
+          onClick={() => props.togglePanel("storage")}
+        >
+          <Icon name="storage" className="size-3" />
+          {props.opfs === undefined ? (
+            <span className="hidden sm:inline">storage</span>
+          ) : (
+            formatBytes(props.opfs)
+          )}
         </Item>
         <Deprecated view={view} />
 

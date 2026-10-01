@@ -65,6 +65,9 @@ published. After that they are asked for again: the registry lets a page read no
 the browser's HTTP cache does the revalidating. No lockfile is kept between loads:
 each resolves against the registry, as a project with no `upm.lock` does, and hands its lockfile
 to the install. A package the store already has shows its files from there, without a download.
+The bottom panel's Storage tab (`src/components/storage.tsx`) lists what OPFS holds: the store's
+packages and the kept documents with how long each stays fresh, each part's size, the site's
+quota and whether the browser keeps it when the disk runs low. It clears a part or all of it.
 
 `public/install.sh` and `public/install.ps1` are the installers behind
 `curl -fsSL https://upm.sh/install.sh | sh` and `irm https://upm.sh/install.ps1 | iex`, which the

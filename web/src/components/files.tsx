@@ -217,6 +217,8 @@ interface Entry {
   path: string;
   /** A directory's entries. */
   entries?: Map<string, Entry>;
+  /** A directory's bytes, summed from its files. */
+  bytes?: number;
 }
 
 function Tree(props: {
@@ -232,8 +234,10 @@ function Tree(props: {
   const top = useMemo(() => {
     const paths = [...(files?.keys() ?? [])];
     if (lock !== undefined && !files?.has(LOCK)) paths.push(LOCK);
-    return build(paths);
-  }, [files, lock]);
+    const tree = build(paths);
+    if (files) sum(tree, files, links);
+    return tree;
+  }, [files, links, lock]);
   // Closed, except the way down to the package, where its README sits. What lands later comes
   // in closed too, so rows already shown stay where they are.
   const [open, setOpen] = useState(() => new Set(ancestors(props.root)));
@@ -302,6 +306,7 @@ function Tree(props: {
 
   function size(entry: Entry): string | undefined {
     if (entry.path === LOCK && lock !== undefined) return formatBytes(lock.length);
+    if (entry.entries) return entry.bytes ? formatBytes(entry.bytes) : undefined;
     const file = files?.get(entry.path);
     return file && formatBytes(file.size);
   }
@@ -418,6 +423,28 @@ function build(paths: string[]): Map<string, Entry> {
     }
   }
   return top;
+}
+
+/**
+ * Sets each directory's bytes and returns the total, as `du` counts them: a symlink, and the
+ * copy an opened link shows, add nothing, so no file counts twice.
+ */
+function sum(
+  entries: Map<string, Entry>,
+  files: Map<string, InstalledFile>,
+  links: Map<string, string> | undefined,
+): number {
+  let total = 0;
+  for (const entry of entries.values()) {
+    if (entry.entries) {
+      entry.bytes = sum(entry.entries, files, links);
+      if (!links?.has(entry.path)) total += entry.bytes;
+      continue;
+    }
+    const file = files.get(entry.path);
+    if (file && file.link === undefined) total += file.size;
+  }
+  return total;
 }
 
 /** The store (`~`) on top, then directories, then files; dot names sort first in each. */

@@ -18,6 +18,7 @@ import { Breadcrumb, Editor } from "./components/editor.tsx";
 import { Explorer, treePath } from "./components/files.tsx";
 import { loadMarkdown } from "./components/markdown.tsx";
 import { fillCrypto } from "./lib/insecure.ts";
+import { opfsSize } from "./lib/opfs.ts";
 import {
   installInTab,
   installProgress,
@@ -332,6 +333,31 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
   };
   const togglePanel = (tab: PanelTab) => choosePanel(panel === tab ? undefined : tab);
 
+  // OPFS's size, for the status bar and the Storage tab: asked again as the panel changes and as
+  // an install starts or ends. The store's writes trail the install, so it may lag a little.
+  const [opfs, setOpfs] = useState<number>();
+  const installState = view?.installed;
+  useEffect(() => {
+    void opfsSize().then(setOpfs);
+  }, [panel, installState]);
+
+  // Ctrl or Cmd and ` shows or hides the panel, as in VS Code: it opens on the tab it last had.
+  const lastPanel = useRef<PanelTab>("requests");
+  useEffect(() => {
+    if (panel) lastPanel.current = panel;
+  }, [panel]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Backquote" || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      e.preventDefault();
+      if (e.repeat) return;
+      panelSet.current = true;
+      setPanel((tab) => (tab ? undefined : lastPanel.current));
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-(--chrome-bg) text-sm text-zinc-900 dark:text-zinc-100">
       <TopBar
@@ -420,6 +446,8 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
               onClose={() => choosePanel(undefined)}
               requests={requests}
               problems={problems}
+              opfs={opfs}
+              setOpfs={setOpfs}
             />
           </div>
         </div>
@@ -432,6 +460,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         problems={problems}
         panel={panel}
         togglePanel={togglePanel}
+        opfs={opfs}
         registry={registryUrl}
         setRegistry={(url) => {
           setRegistryUrl(url);

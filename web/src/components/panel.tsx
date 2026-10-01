@@ -1,11 +1,12 @@
-// The bottom panel, below the editor and right of the sidebar: every registry request, and what
-// went wrong.
+// The bottom panel, below the editor and right of the sidebar: every registry request, what
+// went wrong, and what this browser keeps on OPFS.
 import { useRef, useState } from "react";
 import type { RequestEntry } from "../lib/client.ts";
 import { formatBytes } from "./code.tsx";
+import { Storage } from "./storage.tsx";
 import { clamp, Icon, IconButton, ISLAND, Sash, Tab, Tabs, useStored, Waiting } from "./ui.tsx";
 
-export type PanelTab = "requests" | "problems";
+export type PanelTab = "requests" | "problems" | "storage";
 
 export interface Problem {
   level: "error" | "warning";
@@ -21,15 +22,19 @@ export function Panel(props: {
   onClose: () => void;
   requests: RequestEntry[];
   problems: Problem[];
+  /** OPFS's size, which the Storage tab sets to its walked total. */
+  opfs: number | undefined;
+  setOpfs: (bytes: number) => void;
 }) {
-  const { tab, requests, problems } = props;
+  const { tab, requests, problems, opfs } = props;
   const [height, setHeight] = useStored("panel-height", 240);
   const [maximized, setMaximized] = useState(false);
   const ref = useRef<HTMLElement>(null);
   if (!tab) return null;
-  const tabs: [PanelTab, string, number][] = [
+  const tabs: [PanelTab, string, (number | string)?][] = [
     ["problems", "Problems", problems.length],
     ["requests", "Requests", requests.length],
+    ["storage", "Storage", opfs === undefined ? undefined : formatBytes(opfs)],
   ];
   return (
     <section
@@ -52,9 +57,11 @@ export function Panel(props: {
             {tabs.map(([name, label, count]) => (
               <Tab key={name} active={tab === name} onClick={() => props.setTab(name)}>
                 {label}
-                <span className="rounded-full bg-zinc-200 px-1.5 text-[10px] leading-4 tabular-nums dark:bg-zinc-700">
-                  {count}
-                </span>
+                {count !== undefined && (
+                  <span className="rounded-full bg-zinc-200 px-1.5 text-[10px] leading-4 tabular-nums dark:bg-zinc-700">
+                    {count}
+                  </span>
+                )}
               </Tab>
             ))}
           </Tabs>
@@ -64,11 +71,17 @@ export function Panel(props: {
               title={maximized ? "Restore panel size" : "Maximize panel size"}
               onClick={() => setMaximized(!maximized)}
             />
-            <IconButton icon="close" title="Close panel" onClick={props.onClose} />
+            <IconButton icon="close" title="Close panel (Ctrl+`)" onClick={props.onClose} />
           </span>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
-          {tab === "requests" ? <Requests requests={requests} /> : <Problems problems={problems} />}
+          {tab === "requests" ? (
+            <Requests requests={requests} />
+          ) : tab === "storage" ? (
+            <Storage onSize={props.setOpfs} />
+          ) : (
+            <Problems problems={problems} />
+          )}
         </div>
       </div>
     </section>
@@ -132,11 +145,11 @@ function Requests({ requests }: { requests: RequestEntry[] }) {
             <tr
               key={r.id}
               className="hover:bg-zinc-200/50 dark:hover:bg-zinc-800/50"
-              title={`#${r.id + 1} ${r.url}\nstart ${formatMs(r.start - first)}, headers ${r.status ? formatMs(r.ms) : "…"}, done ${r.done ? formatMs(total) : "…"}`}
+              title={`#${r.id + 1} ${decode(r.url)}\nstart ${formatMs(r.start - first)}, headers ${r.status ? formatMs(r.ms) : "…"}, done ${r.done ? formatMs(total) : "…"}`}
             >
               <td className="py-0.5 pr-3 pl-3">
                 <div className="max-w-[min(35vw,20rem)] truncate">
-                  {r.url.replace(/^https?:\/\/[^/]+/, "")}
+                  {decode(r.url.replace(/^https?:\/\/[^/]+/, ""))}
                 </div>
               </td>
               <td className="pr-3">
@@ -172,6 +185,15 @@ function Requests({ requests }: { requests: RequestEntry[] }) {
 /** Faint lines at each quarter of the time axis. */
 const GRID =
   "bg-[linear-gradient(to_left,rgb(0_0_0/0.07)_1px,transparent_1px)] bg-size-[25%_100%] bg-right dark:bg-[linear-gradient(to_left,rgb(255_255_255/0.07)_1px,transparent_1px)]";
+
+/** As read, `@scope/name` not `@scope%2fname`; a malformed escape stays as it is. */
+function decode(url: string): string {
+  try {
+    return decodeURIComponent(url);
+  } catch {
+    return url;
+  }
+}
 
 export function formatMs(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;

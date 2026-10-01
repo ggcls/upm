@@ -5,7 +5,7 @@
 // changes, so tabs share them with no lock: a write lands whole on `close()`, and upm sets a
 // package's index last, once its blobs are all in.
 import { concat, shortHash } from "upm/src/runtime.ts";
-import type { StoreBackend } from "upm/src/store-backend.ts";
+import type { BackendIndex, StoreBackend } from "upm/src/store-backend.ts";
 
 const DIR = "upm-store";
 /** OPFS calls in flight at once, across every package and tab's install. */
@@ -237,6 +237,169 @@ async function sweep(dir: FileSystemDirectoryHandle): Promise<void> {
       }, LATER);
     }
   } catch {}
+}
+
+// --- Inspect and clear ---
+
+/** A top-level entry of this origin's OPFS, walked to the end. */
+export interface OpfsEntry {
+  name: string;
+  files: number;
+  bytes: number;
+}
+
+export interface OpfsReport {
+  entries: OpfsEntry[];
+  /** All the entries' bytes. */
+  bytes: number;
+  /** What the browser counts for this origin, OPFS and the rest. Undefined where it won't say. */
+  usage?: number;
+  quota?: number;
+  persisted?: boolean;
+}
+
+/** Every top-level entry with its file count and size, or undefined where there is no OPFS. */
+export async function inspect(): Promise<OpfsReport | undefined> {
+  let root: FileSystemDirectoryHandle;
+  try {
+    root = await navigator.storage.getDirectory();
+  } catch {
+    return undefined;
+  }
+  const [estimate, persisted] = await Promise.all([
+    navigator.storage.estimate?.().catch(() => undefined),
+    navigator.storage.persisted?.().catch(() => undefined),
+  ]);
+  const entries: OpfsEntry[] = [];
+  for await (const handle of root.values()) {
+    const entry = { name: handle.name, files: 0, bytes: 0 };
+    if (handle.kind === "file") {
+      entry.files = 1;
+      entry.bytes = (await handle.getFile()).size;
+    } else {
+      await walk(handle, entry);
+    }
+    entries.push(entry);
+  }
+  const bytes = entries.reduce((sum, entry) => sum + entry.bytes, 0);
+  return { entries, bytes, usage: estimate?.usage, quota: estimate?.quota, persisted };
+}
+
+/**
+ * OPFS's size without a walk, as the browser counts it: Chrome says it apart, others give all the
+ * site keeps, which here is OPFS but for a little.
+ */
+export async function opfsSize(): Promise<number | undefined> {
+  try {
+    const estimate = await navigator.storage.estimate();
+    const details = (estimate as { usageDetails?: { fileSystem?: number } }).usageDetails;
+    return details ? (details.fileSystem ?? 0) : estimate.usage;
+  } catch {
+    return undefined;
+  }
+}
+
+async function walk(dir: FileSystemDirectoryHandle, sum: OpfsEntry): Promise<void> {
+  const dirs: FileSystemDirectoryHandle[] = [];
+  const files: Promise<void>[] = [];
+  for await (const handle of dir.values()) {
+    if (handle.kind === "directory") dirs.push(handle);
+    else {
+      files.push(
+        lane(async () => {
+          // One removed meanwhile is not counted.
+          const file = await handle.getFile().catch(() => undefined);
+          if (!file) return;
+          sum.files++;
+          sum.bytes += file.size;
+        }, LATER),
+      );
+    }
+  }
+  await Promise.all(files);
+  for (const handle of dirs) await walk(handle, sum);
+}
+
+/** A package the store keeps, from its index. */
+export interface KeptPackage {
+  integrity: string;
+  name?: string;
+  version?: string;
+  files: number;
+  bytes: number;
+}
+
+/** The packages in the store; one whose index is torn is left out. */
+export async function keptPackages(): Promise<KeptPackage[]> {
+  const home = await (opened ??= open());
+  const dir = await home?.getDirectoryHandle("index").catch(() => undefined);
+  if (!dir) return [];
+  const packages = await readAll(dir, (data) => {
+    const index = JSON.parse(new TextDecoder().decode(data)) as BackendIndex;
+    return {
+      integrity: index.integrity,
+      name: index.name,
+      version: index.version,
+      files: index.files.length,
+      bytes: index.unpackedSize,
+    };
+  });
+  return packages.sort((a, b) => (a.name ?? "~").localeCompare(b.name ?? "~"));
+}
+
+/** A registry document kept for the resolver, from its head. */
+export interface KeptDocument extends Head {
+  bytes: number;
+}
+
+/** The registry documents kept, newest first; a torn one is left out. */
+export async function keptDocuments(): Promise<KeptDocument[]> {
+  const dir = await (docs ??= openDocs());
+  if (!dir) return [];
+  const documents = await readAll(dir, (data) => {
+    const end = data.indexOf(10);
+    const head = JSON.parse(new TextDecoder().decode(data.subarray(0, end))) as Head;
+    return { ...head, bytes: data.length - end - 1 };
+  });
+  return documents.sort((a, b) => b.at - a.at);
+}
+
+/** Each file of `dir` through `parse`, leaving out what it throws on. */
+async function readAll<T>(
+  dir: FileSystemDirectoryHandle,
+  parse: (data: Uint8Array) => T,
+): Promise<T[]> {
+  const names: string[] = [];
+  for await (const handle of dir.values()) if (handle.kind === "file") names.push(handle.name);
+  const parsed = await Promise.all(
+    names.map((name) =>
+      lane(async () => {
+        const data = await read(dir, name);
+        try {
+          return data && parse(data);
+        } catch {
+          return undefined;
+        }
+      }, LATER),
+    ),
+  );
+  return parsed.filter((item) => item !== undefined);
+}
+
+/**
+ * Remove a top-level entry of OPFS, or all of them. The next install and the next request open
+ * theirs afresh; one under way when it goes loses what it was writing.
+ */
+export async function clear(name?: string): Promise<void> {
+  const root = await navigator.storage.getDirectory();
+  const names: string[] = [];
+  if (name) names.push(name);
+  else for await (const handle of root.values()) names.push(handle.name);
+  opened = docs = undefined;
+  const failed = (
+    await Promise.allSettled(names.map((n) => root.removeEntry(n, { recursive: true })))
+  ).find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
 }
 
 // --- Lanes ---
