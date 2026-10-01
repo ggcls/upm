@@ -255,14 +255,17 @@ export async function resolveTree(
    * `registry.ts`). Anything the registry cannot answer that way falls through to the
    * packument, so the errors stay the packument's. An optional pin is read out of the full
    * packument: it is most often a platform build, and a linux one needs the `libc` only the
-   * full document has, so one read answers both, as pnpm does.
+   * full document has, so one read answers both, as pnpm does. A pin whose name names another
+   * os reads the smaller abbreviated one: the name only picks the document, so a build it
+   * misnames still has its libc read by `needsLibc`, one request later.
    */
   async function fetchManifest(spec: Spec, fresh: boolean, optional: boolean): Promise<Manifest> {
     // `=1.2.3` and `v1.2.3` are exact specs but never registry paths. Deduping pins the same
     // way: the locked version it prefers is one the registry answers for by version.
     const exact = spec.type === "version" ? parse(spec.fetchSpec)?.version : undefined;
     const wanted = exact ?? (options.dedupe && !fresh ? kept(spec) : undefined);
-    if (registry.pick) return await registry.pick(spec, wanted, undefined, optional);
+    const full = optional && !offLinux(spec.fetchName);
+    if (registry.pick) return await registry.pick(spec, wanted, undefined, full);
     const found = wanted === undefined ? undefined : await registry.pinned(spec.fetchName, wanted);
     return found ?? pickManifest(await registry.view(spec.fetchName), spec);
   }
@@ -1228,6 +1231,15 @@ function crawl(
     }
   }
   return seen;
+}
+
+/** Os words in platform build names, linux aside. `wasm32` names no os, so linux stays possible. */
+const OTHER_OS =
+  /(?:^|[-_/.])(?:darwin|win32|android|freebsd|openbsd|netbsd|sunos|aix|openharmony)(?=$|[-_.])/;
+
+/** Whether a name says its build is for another os, and never also says linux. */
+function offLinux(name: string): boolean {
+  return OTHER_OS.test(name) && !/linux/.test(name);
 }
 
 /** npm semantics: `!x` blocks, a plain list allows, `any` and an empty list match all. */

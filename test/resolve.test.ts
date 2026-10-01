@@ -639,6 +639,35 @@ describe("platform filtering", () => {
     ]);
   });
 
+  it("reads an optional pin another os's name names out of the abbreviated document", async () => {
+    // The darwin name is wrong: the build is linux, so its libc is still read, one request on.
+    const corgi: Fixture = {
+      "@x/bin-darwin-arm64": { "1.0.0": { os: ["linux"], cpu: ["arm64"] } },
+      "@x/bin-win32-x64": { "1.0.0": { os: ["win32"], cpu: ["x64"] } },
+      "@x/bin-linux-x64-gnu": { "1.0.0": { os: ["linux"], cpu: ["x64"] } },
+    };
+    const full: Fixture = {
+      ...corgi,
+      "@x/bin-darwin-arm64": { "1.0.0": { os: ["linux"], cpu: ["arm64"], libc: ["glibc"] } },
+      "@x/bin-linux-x64-gnu": { "1.0.0": { os: ["linux"], cpu: ["x64"], libc: ["glibc"] } },
+    };
+    const { registry, manifests } = fake(corgi, full);
+    const fulls: string[] = [];
+    registry.pick = async (spec, pinned, _options, whole) => {
+      if (whole) fulls.push(spec.fetchName);
+      const version = pinned ?? "1.0.0";
+      return whole
+        ? registry.manifest(spec.fetchName, version)
+        : (await registry.pinned(spec.fetchName, version))!;
+    };
+    const optionalDependencies = Object.fromEntries(Object.keys(corgi).map((n) => [n, "1.0.0"]));
+    const out = await resolveTree({ optionalDependencies }, { registry });
+    expect(fulls).toEqual(["@x/bin-linux-x64-gnu"]);
+    expect(manifests.sort()).toEqual(["@x/bin-darwin-arm64@1.0.0", "@x/bin-linux-x64-gnu@1.0.0"]);
+    expect(out.packages["@x/bin-darwin-arm64@1.0.0"]?.libc).toEqual(["glibc"]);
+    expect(out.packages["@x/bin-win32-x64@1.0.0"]?.libc).toBeUndefined();
+  });
+
   it("asks for the full manifest only of a linux build nothing else says the libc of", async () => {
     const fixture: Fixture = {
       plain: { "1.0.0": {} }, // no os/cpu: nothing to learn
