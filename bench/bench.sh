@@ -366,7 +366,7 @@ if [ "$CHART" = 1 ]; then
   done
   node "$HERE/chart.ts" "$OUT" --size || echo "bench: size chart failed" >&2
   if [ "$all" = 1 ]; then
-    node "$HERE/chart.ts" "$OUT" --size -o "$HERE/charts/" \
+    node "$HERE/chart.ts" "$OUT" --size -o "$HERE/charts/" --readme "$HERE/../README.md" \
       || echo "bench: size chart failed for charts/" >&2
   fi
 fi

@@ -389,6 +389,8 @@ export interface Options {
   measure?: Measure;
   out?: string;
   size: boolean;
+  // With --size: a markdown file whose size markers get the new sizes.
+  readme?: string;
   help: boolean;
 }
 
@@ -418,7 +420,7 @@ export function parseArgs(args: string[], chart = false): Options {
       arg === "--metric" ||
       arg === "--phase" ||
       arg === "--measure" ||
-      (chart && (arg === "--out" || arg === "-o"))
+      (chart && (arg === "--out" || arg === "-o" || arg === "--readme"))
     ) {
       const value = args[++i];
       if (!value || value.startsWith("-")) throw new Error(`missing value for ${arg}`);
@@ -431,7 +433,8 @@ export function parseArgs(args: string[], chart = false): Options {
       } else if (arg === "--phase") {
         if (!PHASES.includes(value as Phase)) throw new Error(`invalid phase: ${value}`);
         if (!options.phases.includes(value as Phase)) options.phases.push(value as Phase);
-      } else options.out = value;
+      } else if (arg === "--readme") options.readme = value;
+      else options.out = value;
     } else if (arg.startsWith("-")) throw new Error(`unknown option: ${arg}`);
     else options.results.push(arg);
   }

@@ -873,7 +873,7 @@ export function main(args = process.argv.slice(2)) {
   const options = parseArgs(args, true);
   if (options.help) {
     console.log(
-      "Usage: node bench/chart.ts [results.jsonl ...] [-o out.svg] [--metric min|max|median|mean] [--phase cold|warm|repeat] [--measure time|memory|cpu] [--size]\nDefaults to the newest bench/results/*.jsonl and install time. --phase is repeatable.\nWrites one chart per phase: <stamp>.<phase>.svg, or <stamp>.<phase>.memory.svg and .cpu.svg.\nWith -o and one phase, writes that file; with several, inserts the phase before .svg.\nWith -o <dir>/, writes <dir>/<phase>.svg and the like, for charts at a fixed path.\n--size writes one chart of each manager's size on disk instead: <stamp>.size.svg, -o as given, or <dir>/size.svg.",
+      "Usage: node bench/chart.ts [results.jsonl ...] [-o out.svg] [--metric min|max|median|mean] [--phase cold|warm|repeat] [--measure time|memory|cpu] [--size]\nDefaults to the newest bench/results/*.jsonl and install time. --phase is repeatable.\nWrites one chart per phase: <stamp>.<phase>.svg, or <stamp>.<phase>.memory.svg and .cpu.svg.\nWith -o and one phase, writes that file; with several, inserts the phase before .svg.\nWith -o <dir>/, writes <dir>/<phase>.svg and the like, for charts at a fixed path.\n--size writes one chart of each manager's size on disk instead: <stamp>.size.svg, -o as given, or <dir>/size.svg.\n--readme <file> with --size also fills that file's size markers: <!-- size:<runner>[:packed] -->…<!-- /size -->.",
     );
     return;
   }
@@ -921,6 +921,29 @@ export function main(args = process.argv.slice(2)) {
     builtin.fs.writeFileSync(out, svg());
     console.log(out);
   }
+  if (options.size && options.readme) {
+    fillSizes(options.readme, aggregate(rows, options.metric, options.phases).runners);
+    console.log(options.readme);
+  }
+}
+
+// Replaces the text between `<!-- size:<runner> -->` (or `size:<runner>:packed`) and
+// `<!-- /size -->` with that manager's size, so prose quoting sizes stays current.
+function fillSizes(file: string, runners: Runner[]) {
+  const text = builtin.fs.readFileSync(file, "utf8");
+  const next = text.replace(
+    /(<!-- size:([\w.-]+?)(:packed)? -->)[^<]*(<!-- \/size -->)/g,
+    (match, open: string, name: string, packed: string | undefined, close: string) => {
+      const runner = runners.find((r) => r.name === name);
+      const bytes = packed ? runner?.packedBytes : runner?.bytes;
+      if (!bytes) {
+        console.error(`chart: no ${packed ? "packed " : ""}size for ${name} in ${file}`);
+        return match;
+      }
+      return open + fmtBytes(bytes) + close;
+    },
+  );
+  if (next !== text) builtin.fs.writeFileSync(file, next);
 }
 
 if (import.meta.main) {

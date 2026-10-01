@@ -49,7 +49,8 @@ node chart.ts                      # re-render the charts for the newest run
    `<stamp>.<phase>.svg`, `.memory.svg`, `.cpu.svg`, plus `<stamp>.size.svg`. A full suite
    (all runners, default fixtures) also refreshes the committed [`charts/`](charts) that the
    main README links to. Size does not depend on the fixtures, so any run of all runners
-   on the default registry refreshes `charts/size.svg`.
+   on the default registry refreshes `charts/size.svg` and the sizes quoted in the main README, between
+   `<!-- size:<runner> -->` (or `size:<runner>:packed`) and `<!-- /size -->`.
 
 Core dumps are off (`ulimit -c 0`): a crash counts as a failed run, not a heap-sized file in
 the repo. Any `core.<pid>` newer than the run is deleted on exit.
@@ -361,6 +362,7 @@ node chart.ts results/<stamp>.jsonl -o charts/ # charts/{cold,warm,repeat}.svg
 node chart.ts --phase warm -o docs/warm.svg    # one phase, exactly that file
 node chart.ts --measure memory                 # or cpu: <stamp>.<phase>.memory.svg
 node chart.ts --size                           # <stamp>.size.svg
+node chart.ts --size --readme ../README.md     # also fills the README's size markers
 ```
 
 It also takes several result files and `--metric` like `report.ts`, and prints the paths it
