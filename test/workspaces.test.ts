@@ -434,6 +434,10 @@ describe("findRoot", () => {
   });
 
   it("takes the root's set off the proof its state keeps, unless told not to", async () => {
+    // Stamps this fresh are not settled; past 2 s they are, and the proof read back is a newer
+    // one. One clock for both calls keeps the proof as written, however slow the machine.
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
     const manifest = { name: "root", workspaces: ["packages/*"] };
     const { proof } = await listWorkspaces(root, manifest);
     const state = { version: 1, hash: "h", entries: [], complete: true, store: "/store" };
@@ -446,6 +450,7 @@ describe("findRoot", () => {
     expect(await findRoot(join(root, "packages", "a"), false)).toMatchObject({ dir: root });
     expect(glob).toHaveBeenCalledTimes(1);
     glob.mockRestore();
+    clock.mockRestore();
   });
 
   it("is the root itself from the root or a plain subdirectory", async () => {

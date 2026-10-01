@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { link, mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GRACE_MS, pruneStore, sweepEntries } from "../src/gc.ts";
 import { hashOf } from "./hash.ts";
 import { createStore } from "../src/store.ts";
@@ -76,15 +76,43 @@ describe("sweepEntries", () => {
   it("tolerates the entry vanishing under it", async () => {
     await entry("orphan@2.0.0-bbb", { "index.js": "go" });
 
-    // Two sweeps list the same orphan; the loser must still succeed.
+    // Two sweeps list the same orphan; the loser must still succeed. Each counts what it got
+    // to before the other removed it, so which counts 1 is down to the interleaving.
     const both = await Promise.all([
       sweepEntries(project, new Set()),
       sweepEntries(project, new Set()),
     ]);
 
-    expect(both.every((r) => r.removed === 1)).toBe(true);
+    for (const { removed } of both) expect([0, 1]).toContain(removed);
+    expect(both[0]!.removed + both[1]!.removed).toBeGreaterThanOrEqual(1);
     expect(await entries()).toEqual([]);
   });
+
+  it.each(["stat", "lstat"] as const)(
+    "tolerates the entry vanishing just before its %s",
+    async (method) => {
+      // The other sweep wins at one fixed point: before the age check, or before the walk.
+      const at = await entry("orphan@2.0.0-bbb", { "index.js": "go" });
+      const fsp = process.getBuiltinModule("node:fs/promises");
+      const real = fsp[method] as (path: string) => Promise<unknown>;
+      let vanished = false;
+      const spy = vi.spyOn(fsp, method).mockImplementation((async (path: string) => {
+        if (path === at && !vanished) {
+          vanished = true;
+          await rm(at, { recursive: true, force: true });
+        }
+        return real(path);
+      }) as never);
+      try {
+        const { removed } = await sweepEntries(project, new Set());
+        expect(vanished).toBe(true);
+        expect([0, 1]).toContain(removed);
+        expect(await entries()).toEqual([]);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
 
   it("does not count hardlinked content, which the store still holds", async () => {
     const blob = join(root, "blob.js");

@@ -129,7 +129,6 @@ afterEach(() => {
   delete process.env.UPM_TEST_THROW_NAME;
   delete process.env.UPM_TEST_MUTE;
   delete process.env.UPM_TEST_DEAF;
-  delete process.env.UPM_TEST_SLOW_MS;
 });
 
 beforeEach(() => {
@@ -138,8 +137,12 @@ beforeEach(() => {
   flakyFailures = 0;
 });
 
+/**
+ * A pool on the test registry. Its grace is long unless a test sets one: a thread that boots
+ * slower than 1 s on a loaded machine would otherwise see its names asked here instead.
+ */
 function pool(options: PoolOptions = {}): RegistryPool {
-  const p = createRegistryPool({ registry, size: 2, ...options });
+  const p = createRegistryPool({ registry, size: 2, graceMs: 60_000, ...options });
   open.push(p);
   return p;
 }
@@ -243,10 +246,14 @@ describe("createRegistryPool", () => {
     const p = pool({ entry: FLAKY, startAt: 0 });
     expect(await p.pick(parseSpec("foo@^1"))).toHaveProperty("deprecated", "thread");
     expect(await p.pick(parseSpec("flaky@^1"))).toHaveProperty("deprecated", "thread");
+    // Started before anything is asked: a thread that cannot load says so unasked.
+    const warn = vi.fn();
+    pool({ entry: new URL("./does-not-exist.ts", import.meta.url), startAt: 0, warn });
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled(), { timeout: 30_000, interval: 5 });
     // Size 0 is the plain registry at any start.
     const none = pool({ entry: FLAKY, startAt: 0, size: 0 });
     expect(await none.pick(parseSpec("foo@^1"))).not.toHaveProperty("deprecated");
-  });
+  }, 40_000);
 
   it("starts the threads when it is made, told of as many names as start them", async () => {
     const told = pool({ entry: FLAKY, expected: 4 });
@@ -265,28 +272,48 @@ describe("createRegistryPool", () => {
     expect(e).toHaveProperty("deprecated", "thread");
     // A thread that stays silent past the grace does not hold its questions: they are asked
     // here, and the late thread's answer, if it comes, is dropped.
+    // The grace and the boot timeout run on a fake clock: only the grace can end the wait.
     process.env.UPM_TEST_DEAF = "1";
     const deaf = pool({ entry: FLAKY, bootMs: 5000, graceMs: 200 });
     for (const name of ["boot1", "boot2", "boot3"]) await deaf.pinned(name, "0.0.0");
-    const t0 = performance.now();
-    expect(await deaf.pick(parseSpec("foo@^1"))).not.toHaveProperty("deprecated");
-    expect(performance.now() - t0).toBeGreaterThan(150);
-    expect(performance.now() - t0).toBeLessThan(2000);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const before = hits.get("/foo");
+      const found = deaf.pick(parseSpec("foo@^1"));
+      vi.advanceTimersByTime(199);
+      await new Promise((done) => setImmediate(done));
+      expect(hits.get("/foo")).toBe(before);
+      vi.advanceTimersByTime(1);
+      vi.useRealTimers();
+      expect(await found).not.toHaveProperty("deprecated");
+      expect(hits.get("/foo")).toBe(before! + 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not ask here again once the thread has said hello and is merely slow", async () => {
-    // The question is handed to the thread while it boots; the thread says hello at once and
-    // answers 2.5 s later, past a 1 s grace. The grace waits for the hello, not the answer:
-    // asked here as well, the registry would see the question twice. The grace is wide enough
-    // for a thread to boot under a loaded test run, which is not what is being tested; only
-    // the hello can race it, so no condition can stand in for the clock here.
-    process.env.UPM_TEST_SLOW_MS = "2500";
-    const p = pool({ entry: SLOW, size: 1, startAt: 0, graceMs: 1000 });
-    const found = await p.pick(parseSpec("foo@^1"));
-    expect(found).toHaveProperty("deprecated", "thread");
-    await new Promise((done) => setTimeout(done, 200));
-    expect(hits.get("/foo")).toBe(1);
-  }, 10_000);
+    // The question is handed to the thread while it boots. The grace runs on a fake clock, so
+    // it cannot end before the hello however slow the boot; once the pool has read the hello,
+    // the clock passes the grace while the thread still holds its answer. The grace waits for
+    // the hello, not the answer: asked here as well, the registry would see the question twice.
+    const gate = new BroadcastChannel("upm-test-slow");
+    const hello = vi.fn();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const p = pool({ entry: SLOW, size: 1, startAt: 0, graceMs: 1000, undated: hello });
+      const found = p.pick(parseSpec("foo@^1"));
+      await vi.waitFor(() => expect(hello).toHaveBeenCalled(), { timeout: 30_000, interval: 5 });
+      vi.advanceTimersByTime(10_000);
+      vi.useRealTimers();
+      gate.postMessage("go");
+      expect(await found).toHaveProperty("deprecated", "thread");
+      expect(hits.get("/foo")).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      gate.close();
+    }
+  }, 40_000);
 
   it("does not wait on a thread that never speaks", async () => {
     process.env.UPM_TEST_DEAF = "1";
