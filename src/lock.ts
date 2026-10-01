@@ -618,7 +618,7 @@ function checkEdges(
   for (const [name, kind] of Object.entries(entry.peers ?? {})) {
     // Settling it again needs its range, so a peer has to be a declared one.
     if (!PEER_KINDS.has(kind)) throw fail(`${at}.peers["${name}"] must be required or optional`);
-    if (!entry.peerDependencies?.[name]) {
+    if (!Object.hasOwn(entry.peerDependencies ?? {}, name)) {
       throw fail(`${at}.peers["${name}"] is not in ${at}.peerDependencies`);
     }
   }
@@ -676,7 +676,7 @@ function requiredSet(lock: Lockfile): Set<string> {
   // `rootEdges` gives optionalDependencies priority over a name declared in both.
   return reach(
     lock,
-    (top, name) => !(name in (top.specs?.optionalDependencies ?? {})),
+    (top, name) => !Object.hasOwn(top.specs?.optionalDependencies ?? {}, name),
     (entry) => [entry.dependencies],
   );
 }
@@ -698,7 +698,7 @@ function topOf(
   const prod = new Set([
     ...Object.keys(specs?.dependencies ?? {}),
     ...Object.keys(specs?.optionalDependencies ?? {}),
-    ...Object.keys(peers).filter((name) => !(name in dev)),
+    ...Object.keys(peers).filter((name) => !Object.hasOwn(dev, name)),
   ]);
   return { specs, dependencies, prod };
 }

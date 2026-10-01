@@ -1382,6 +1382,41 @@ describe("workspaces", () => {
     expect(fromLockfile(lock).packages["nanoid@5.0.0"]?.dev).toBe(true);
   });
 
+  it("reads a name every object has as any other", () => {
+    const lock = (peerDependencies: object) =>
+      JSON.stringify({
+        lockfileVersion: 1,
+        root: {
+          specs: { dependencies: { constructor: "^1" } },
+          dependencies: { constructor: "1.0.0" },
+          workspaces: ["packages/*"],
+        },
+        workspaces: {
+          "packages/w": {
+            name: "w",
+            version: "1.0.0",
+            peerDependencies: { toString: "^1" },
+            peers: { toString: "required" },
+            dependencies: { toString: "1.0.0" },
+          },
+        },
+        packages: {
+          "constructor@1.0.0": { integrity: "sha512-a" },
+          "toString@1.0.0": {
+            integrity: "sha512-b",
+            peerDependencies,
+            peers: { valueOf: "optional" },
+          },
+        },
+      });
+    // A required edge of the root, a workspace's peer that ships, and a peer of any range.
+    const out = fromLockfile(parseLockfile(lock({ valueOf: "" }))).packages;
+    expect(out["constructor@1.0.0"]).toMatchObject({ optional: false, dev: false });
+    expect(out["toString@1.0.0"]).toMatchObject({ optional: false, dev: false });
+    // A peer is still one its entry declares.
+    expect(thrown(() => parseLockfile(lock({}))).message).toMatch(/peers\["valueOf"\] is not in/);
+  });
+
   it("filters platforms with every workspace as a seed", () => {
     const out = filterPlatform(fromLockfile(toLockfile(tree())), { os: "linux", cpu: "x64" });
     expect(Object.keys(out.packages)).toEqual([

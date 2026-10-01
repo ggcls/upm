@@ -2339,6 +2339,49 @@ describe("a tarball is the package it is installed as", () => {
     await refused("ELOCK");
   });
 
+  it("installs a package named as a property every object has, as any other", async () => {
+    publish("constructor", "1.0.0");
+    publish("uses", "1.0.0", undefined, { constructor: "^1" });
+    // A peer no tree installs, which `--verify` must not take for one installed.
+    const optional = { peerDependenciesMeta: { valueOf: { optional: true } } };
+    publish("hopes", "1.0.0", undefined, undefined, { valueOf: "^1" }, optional);
+    await mkdir(join(dir, "packages", "w"), { recursive: true });
+    const w = { name: "w", version: "1.0.0", peerDependencies: { constructor: "^1" } };
+    await writeFile(join(dir, "packages", "w", "package.json"), JSON.stringify(w));
+    const manifest = (more: object = {}) =>
+      writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({
+          workspaces: ["packages/*"],
+          dependencies: { w: "workspace:*" },
+          devDependencies: { uses: "^1", hopes: "^1", ...more },
+        }),
+      );
+    const peer = join(dir, "packages", "w", "node_modules", "constructor", "index.js");
+    const own = async () => {
+      const uses = await realpath(join(dir, "node_modules", "uses"));
+      return readFile(join(dirname(uses), "constructor", "index.js"), "utf8");
+    };
+    await manifest();
+    await upm.install(base);
+    expect(await own()).toContain("constructor@1.0.0");
+    // A resolve that keeps the locked tree keeps the edge too.
+    publish("other", "1.0.0");
+    await manifest({ other: "^1" });
+    await upm.install(base);
+    expect(await own()).toContain("constructor@1.0.0");
+    lines.length = 0;
+    await upm.install({ ...base, verify: true });
+    expect(lines.filter((line) => line.includes("unmet peer"))).toEqual([]);
+    // Only the workspace's peer ships, whether resolved or read from the lock.
+    for (const frozen of [false, true]) {
+      if (!frozen) await rm(join(dir, "upm.lock"));
+      await rm(join(dir, "node_modules"), { recursive: true, force: true });
+      await upm.install({ ...base, frozen, production: true });
+      expect(await readFile(peer, "utf8")).toContain("constructor@1.0.0");
+    }
+  });
+
   it("takes a workspace's peer on what its devDependencies alias", async () => {
     publish("rolldown-vite", "7.1.0");
     const evil = publish("evil", "7.1.0");

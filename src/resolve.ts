@@ -336,7 +336,7 @@ export async function resolveTree(
     if (Object.keys(peers).length > 0) found.peers = peers;
     await Promise.all([
       ...Object.entries(own)
-        .filter(([n]) => !(n in optional))
+        .filter(([n]) => !Object.hasOwn(optional, n))
         .map(([n, r]) => edge(key, n, r, false)),
       ...Object.entries(optional).map(([n, r]) => edge(key, n, r, true)),
     ]);
@@ -420,7 +420,7 @@ export async function resolveTree(
       [true, optionalDependencies],
     ] as const) {
       for (const [name, version] of Object.entries(map)) {
-        if (name in peers) continue;
+        if (Object.hasOwn(peers, name)) continue;
         list.push({ name, version, optional });
         visitLocked(key, `${name}@${version}`);
       }
@@ -857,7 +857,7 @@ export function unmetPeers(resolution: Resolution): string[] {
     const pkg = resolution.packages[key]!;
     const deps = allDeps(pkg);
     for (const [name, range] of Object.entries(pkg.peerDependencies ?? {}).sort()) {
-      const edge = deps[name];
+      const edge = Object.hasOwn(deps, name) ? deps[name] : undefined;
       // Absent means nothing was installed under that name: an optional peer, or one the
       // platform filter dropped. Both are reported where they happen, not again here.
       if (edge === undefined) continue;
@@ -1053,7 +1053,7 @@ function top(manifest: RootManifest): Top {
   const prod = new Set([
     ...Object.keys(manifest.dependencies ?? {}),
     ...Object.keys(manifest.optionalDependencies ?? {}),
-    ...Object.keys(manifest.peerDependencies ?? {}).filter((name) => !(name in dev)),
+    ...Object.keys(manifest.peerDependencies ?? {}).filter((name) => !Object.hasOwn(dev, name)),
   ]);
   return { manifest, prod };
 }

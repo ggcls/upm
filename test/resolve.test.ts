@@ -2271,6 +2271,16 @@ describe("workspaces", () => {
     b: { "1.0.0": {}, "1.5.0": {}, "2.0.0": {} },
   };
 
+  it("ships a workspace's peer named as a property every object has", async () => {
+    const w = ws("packages/w", {
+      name: "w",
+      version: "1.0.0",
+      peerDependencies: { constructor: "^1" },
+    });
+    const out = await resolve({ constructor: { "1.0.0": {} } }, {}, { workspaces: [w] });
+    expect(out.packages["constructor@1.0.0"]).toMatchObject({ dev: false, optional: false });
+  });
+
   it("is a top: its own package, its deps walked, and never asked of the registry", async () => {
     const { result, calls } = run(fixture, { dependencies: { a: "^1" } }, { workspaces: [a, b] });
     const out = await result;
