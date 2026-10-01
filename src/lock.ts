@@ -180,7 +180,10 @@ export function fromCheckedLockfile(lock: Lockfile, baseFor = npmjs): Resolution
     // A lockfile from before aliases were named says so only in the url. Nothing trusts that:
     // the tarball and the dependents' package.json still have to agree with it.
     const real = source ? name : (entry.name ?? packageOf(entry.resolved, version) ?? name);
-    const elsewhere = !source && !!entry.resolved && !onRegistry(entry.resolved, real, baseFor);
+    const elsewhere =
+      !source &&
+      !!entry.resolved &&
+      !(onRegistry(entry.resolved, real, baseFor) && named(entry.resolved, real, version));
     packages[key] = {
       name,
       ...(real !== name && { fetchName: real }),
@@ -220,6 +223,36 @@ function onRegistry(url: string, name: string, baseFor: BaseFor): boolean {
   const own = baseFor(name);
   const bases = own === baseFor("-") ? [own, registryBase()] : [own];
   return bases.some((at) => host(at) === host(url));
+}
+
+/**
+ * Whether a url in a registry's own layout, `…/<name>/-/<file>`, names this package and version
+ * there. A registry serves anyone's tarball by that path, and a tarball may call itself any
+ * package: npmjs's tarball of another one is not this one's. A url of another layout passes.
+ */
+function named(url: string, name: string, version: string): boolean {
+  let parts: string[];
+  try {
+    // As the request will go, so `..` and the query are where fetch puts them.
+    parts = new URL(url).pathname.split("/").map(decodeURIComponent);
+  } catch {
+    return false;
+  }
+  const dash = parts.lastIndexOf("-");
+  // Nothing a server might read as another path: an encoded `?`, `#`, backslash or escape, or
+  // an encoded `/` but in the name or the file beside the `-`.
+  const odd = (part: string, i: number) =>
+    /[?#\\%]/.test(part) || (part.includes("/") && (i - dash) ** 2 !== 1);
+  if (parts.some(odd)) return false;
+  if (dash < 0) return true;
+  // Joined again, as a scoped name's `/` may have come encoded. A scope before an unscoped name
+  // makes it another package.
+  const path = parts.join("/");
+  const base = name.slice(name.indexOf("/") + 1);
+  return [base, name].some((file) => {
+    const tail = `/${name}/-/${file}-${version}.tgz`;
+    return path.endsWith(tail) && !(name === base && /\/@[^/]*$/.test(path.slice(0, -tail.length)));
+  });
 }
 
 /**

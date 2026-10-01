@@ -18,10 +18,13 @@ its registry on the installing machine (by host, `onRegistry` in `src/lock.ts`) 
 integrity its scope's registry publishes for that name and version before any byte from there,
 or from the store, is used (`src/mirror.ts`): otherwise that server decides both the bytes and
 the name inside them. npmjs counts only for a name the default registry serves, since a scope
-sent elsewhere may be anyone's there. A kept document answers, so only such entries ever ask, and
-offline without one they are refused. A registry that publishes only a sha1 `shasum` passes
-only a lockfile naming that sha1, which the tarball is then checked against: forging bytes to
-an existing sha1 is a second preimage, which SHA-1 still resists.
+sent elsewhere may be anyone's there. On its registry, a url in the registry's
+`…/<name>/-/<file>` layout is held the same way unless it names that package and version: a
+registry serves anyone's tarball there, and a tarball may say it is any package.
+A kept document answers, so only such entries ever ask, and offline without one they are
+refused. A registry that publishes only a sha1 `shasum` passes only a lockfile naming that
+sha1, which the tarball is then checked against: forging bytes to an existing sha1 is a second
+preimage, which SHA-1 still resists.
 A scope's registry is derived the same way, from the installing machine's `.npmrc`,
 so a private registry serving the conventional url stays out of the lockfile.
 

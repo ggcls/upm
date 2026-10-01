@@ -142,6 +142,12 @@ These need a scope decision, not just a patch:
   registries with different credentials share a host, the first covers paths outside both,
   where npm goes by the package's scope. A cross-origin redirect
   drops it, which is Node's fetch behavior and what `test/config.test.ts` pins.
+- A lock's `resolved` on its registry's host is trusted by host, and in the
+  `…/<name>/-/<file>` layout by name too: not GitHub Packages' `/download/@owner/…` urls or any
+  odd path, and not whose GitLab project a url names. On a host many publish to, such a url
+  can name another publisher's tarball that says it is this package. Holding every such url to
+  the registry would cost a GitLab instance registry a request per entry. Settled by knowing
+  each such host's own layout, or by measuring that cost. Start at `named` in `src/lock.ts`.
 - The release age (default one day) filters fresh picks through the registry's view only:
   exact versions, locked ones and libc reads are never held back, since a package's exact pins
   are older than the package. A name whose abbreviated document changed after the cutoff costs

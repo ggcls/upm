@@ -490,13 +490,33 @@ describe("resolved urls off the registry", () => {
   it("marks no url under the registry, npmjs, or a scope's registry", () => {
     const acme = "https://npm.acme.test/registry";
     const lock = locked({
-      "a@1.0.0": `${MIRROR}/a/-/odd-1.0.0.tgz`,
+      "a@1.0.0": `${MIRROR}/a/-/a-1.0.0.tgz?odd`,
       "b@1.0.0": `${NPM}/b/-/b-1.0.0.tgz`,
       "@acme/c@1.0.0": `${acme}/download/c/1.0.0`,
       // The scheme and the host's case are not a different registry.
       "d@1.0.0": "http://NPM.corp.internal/api/npm/d.tgz",
+      // A scoped name's `/` encoded, and the scope in the file name, as GitLab and others serve.
+      "@acme/e@1.0.0": `${acme}/@acme%2fe/-/@acme%2Fe-1.0.0.tgz`,
+      "@acme/f@1.0.0-rc.1": `${acme}/projects/7/@acme/f/-/f-1.0.0-rc.1.tgz`,
     });
     expect(elsewhere(lock, hosts(MIRROR, { "@acme": acme }))).toEqual([]);
+  });
+
+  it("marks a url in a registry's layout that names another package or version", () => {
+    // A registry serves anyone's tarball there, and a tarball may say it is any package.
+    const lock = locked({
+      "a@1.0.0": `${NPM}/evil/-/evil-2.0.0.tgz`,
+      "b@1.0.0": `${NPM}/b/-/b-0.9.0.tgz`,
+      "c@1.0.0": `${MIRROR}/c/-/odd-1.0.0.tgz`,
+      "d@1.0.0": `${NPM}/@evil%2fx/-/d-1.0.0.tgz`,
+      "@s/e@1.0.0": `${NPM}/@s/other/-/e-1.0.0.tgz`,
+      // What a server might read as another path.
+      "f@1.0.0": `${NPM}/evil/-/evil-2.0.0.tgz%3f/f/-/f-1.0.0.tgz`,
+      "g@1.0.0": `${NPM}/evil%2f-%2fevil-2.0.0.tgz/g/-/g-1.0.0.tgz`,
+      "h@1.0.0": `${NPM}/h/-/h-1.0.0.tgz/../../../evil/-/evil-2.0.0.tgz`,
+      "i@1.0.0": `${NPM}/i/-/i-1.0.0.tgz/`,
+    });
+    expect(elsewhere(lock, hosts(MIRROR))).toEqual(Object.keys(lock.packages));
   });
 
   it("marks no alias fetched from the registry of the package it names", () => {

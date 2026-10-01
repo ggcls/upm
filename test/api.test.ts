@@ -724,6 +724,25 @@ describe("api", () => {
       await upm.install({ ...base, frozen: true, offline: true });
       expect(await readFile(index(), "utf8")).toContain("nanoid");
     });
+
+    it("is held to the registry when its url there is another package's tarball", async () => {
+      await upm.install(base);
+      // Published as evil, it says it is nanoid: nothing at the registry checks that.
+      const confused = makeTarball([
+        { path: "package.json", data: '{"name":"nanoid","version":"5.0.0"}' },
+        { path: "index.js", data: 'module.exports = "evil";\n' },
+      ]);
+      files["/evil/-/evil-1.0.0.tgz"] = confused;
+      await relock("nanoid@5.0.0", `${registry()}/evil/-/evil-1.0.0.tgz`, hashOf(confused));
+      const fresh = { ...base, store: join(dir, "fresh") };
+      for (const options of [fresh, { ...fresh, frozen: true }]) {
+        await expect(upm.install(options)).rejects.toMatchObject({
+          code: "ELOCK",
+          message: expect.stringContaining("its integrity is not the one at"),
+        });
+      }
+      await expect(stat(index())).rejects.toThrow();
+    });
   });
 
   it("warns once when the registry gives no publish dates for the release age", async () => {
@@ -1988,8 +2007,10 @@ describe("a tarball is the package it is installed as", () => {
     entry.integrity = hashOf(files["/pkg-b/-/pkg-b-2.0.0.tgz"]!);
     await writeFile(file, JSON.stringify(lock, null, 2));
     await rm(join(dir, "node_modules"), { recursive: true });
+    // Its url names pkg-b, so the registry's integrity for pkg-a@1.0.0 refuses it before a byte.
     await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({
-      code: "EMISMATCH",
+      code: "ELOCK",
+      message: expect.stringContaining("its integrity is not the one at"),
     });
   });
 
