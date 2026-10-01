@@ -1100,9 +1100,9 @@ export function linkPath(path: string): boolean {
   if (path === "" || path.includes("\\")) return false;
   const parts = path.split("/");
   const climb = parts.findIndex((part) => part !== "..");
-  return (
-    climb >= 0 && parts.slice(climb).every((part) => part !== "" && part !== "." && part !== "..")
-  );
+  // All `..` (`..`, `../..`) is a directory above the project, and as clean as any.
+  const rest = climb < 0 ? [] : parts.slice(climb);
+  return rest.every((part) => part !== "" && part !== "." && part !== "..");
 }
 
 /**

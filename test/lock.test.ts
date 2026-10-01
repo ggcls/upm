@@ -1517,6 +1517,11 @@ describe("workspaces", () => {
       const twice = lock({ lib: "link:../lib" });
       Object.assign(twice.root.specs, { dependencies: { lib: "^1" } });
       expect(check(twice).message).toMatch(/points at lib@link:\.\.\/lib/);
+      // Only directories above the project, as `link:..` and `link:../..` lock.
+      for (const up of ["link:..", "link:../.."]) {
+        expect(() => parseLockfile(JSON.stringify(lock({ lib: up }, up)))).not.toThrow();
+      }
+      expect(check(lock({ lib: "link:../" }, "link:../")).message).toMatch(/points at/);
       expect(check(lock({ lib: "link:../lib" }, "link:a/../../lib")).message).toMatch(
         /points at lib@link:a\/\.\.\/\.\.\/lib/,
       );
