@@ -314,8 +314,11 @@ export function sameTree(
     if (!entry || entry.name !== ws.name || entry.version !== ws.version) return false;
     const shape = localShape(ws.manifest);
     if (!sameSpecs(shape.specs, entry.specs)) return false;
-    const edges = { ...entry.optionalDependencies, ...entry.dependencies };
-    if (!pinsFit(lock, entry.specs, edges, ws.path, over(ws))) return false;
+    // Each map on its own: the link takes the optional edge of a name in both, and the
+    // platform filter can drop it, which leaves the other.
+    for (const edges of [entry.dependencies, entry.optionalDependencies]) {
+      if (!pinsFit(lock, entry.specs, edges, ws.path, over(ws))) return false;
+    }
     return (["bin", "peerDependencies", "peers"] as const).every(
       (field) =>
         JSON.stringify(sorted(shape[field]) ?? {}) === JSON.stringify(sorted(entry[field]) ?? {}),
@@ -637,7 +640,7 @@ function checkTop(
   }
   const declared = new Set(GROUPS.flatMap((g) => Object.keys((specs as RootSpecs)?.[g] ?? {})));
   for (const name of Object.keys(dependencies)) {
-    if (!declared.has(name) && !(name in peers)) {
+    if (!declared.has(name) && !Object.hasOwn(peers, name)) {
       throw fail(`${at}.dependencies["${name}"] is in no ${at}.specs group, so it has no dev flag`);
     }
   }

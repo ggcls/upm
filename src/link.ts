@@ -313,8 +313,10 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   );
   for (const pkg of Object.values(resolution.packages)) {
     if (pkg.local === undefined) continue;
+    // A peer it also has as a devDependency is that edge, which `sameTree` holds too.
+    const dev = pkg.specs?.devDependencies ?? {};
     for (const [n, v] of Object.entries(allDeps(pkg))) {
-      if (!Object.hasOwn(pkg.peers ?? {}, n)) reached.add(`${n}@${v}`);
+      if (!Object.hasOwn(pkg.peers ?? {}, n) || Object.hasOwn(dev, n)) reached.add(`${n}@${v}`);
     }
   }
 

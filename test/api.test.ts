@@ -2294,6 +2294,185 @@ describe("a tarball is the package it is installed as", () => {
     );
     await refused("ELOCK");
   });
+
+  it("refuses a top's edge under a name every object has, and one a workspace has twice", async () => {
+    publish("host", "1.0.0");
+    const evil = publish("evil", "1.0.1", undefined, undefined, undefined, { bin: { tsc: "x" } });
+    // The root's own edge no package.json declares, with a bin for its `.bin`.
+    for (const name of ["constructor", "toString", "valueOf"]) {
+      await locked({ evil: "^1" }, (packages, lock) => {
+        lock.root.dependencies[name] = "1.0.1";
+        packages[`${name}@1.0.1`] = { name: "evil", integrity: evil, bin: { tsc: "x" } };
+      });
+      await refused("ELOCK");
+    }
+    await mkdir(join(dir, "packages", "w"), { recursive: true });
+    const w = (more: object) =>
+      writeFile(
+        join(dir, "packages", "w", "package.json"),
+        JSON.stringify({ name: "w", version: "1.0.0", ...more }),
+      );
+    const workspaces = { workspaces: ["packages/*"] };
+    // A workspace's peer of such a name is a peer, held as one.
+    publish("constructor", "1.0.0");
+    await w({ peerDependencies: { constructor: "^1" } });
+    await locked(
+      { w: "workspace:*", evil: "^1" },
+      (packages, lock) => {
+        expect(lock.workspaces["packages/w"].peers).toEqual({ constructor: "required" });
+        lock.workspaces["packages/w"].dependencies = { constructor: "1.0.1" };
+        packages["constructor@1.0.1"] = { name: "evil", integrity: evil };
+      },
+      workspaces,
+    );
+    await refused("EMISMATCH");
+    // An edge in both maps: the optional one is linked, so it is held to package.json too.
+    await w({ dependencies: { host: "^1" } });
+    await locked(
+      { w: "workspace:*", evil: "^1" },
+      (packages, lock) => {
+        lock.workspaces["packages/w"].optionalDependencies = { host: "1.0.1" };
+        packages["host@1.0.1"] = { name: "evil", integrity: evil };
+      },
+      workspaces,
+    );
+    await refused("ELOCK");
+  });
+
+  it("takes a workspace's peer on what its devDependencies alias", async () => {
+    publish("rolldown-vite", "7.1.0");
+    const evil = publish("evil", "7.1.0");
+    await mkdir(join(dir, "packages", "w"), { recursive: true });
+    const w = {
+      name: "w",
+      version: "1.0.0",
+      peerDependencies: { vite: "^7" },
+      devDependencies: { vite: "npm:rolldown-vite@^7" },
+    };
+    await writeFile(join(dir, "packages", "w", "package.json"), JSON.stringify(w));
+    await locked({ w: "workspace:*", evil: "^7" }, () => {}, { workspaces: ["packages/*"] });
+    for (const experimental of [base.experimental, pooled]) {
+      await rm(join(dir, "node_modules"), { recursive: true, force: true });
+      await upm.install({ ...base, frozen: true, experimental });
+      const vite = join(dir, "packages", "w", "node_modules", "vite", "index.js");
+      expect(await readFile(vite, "utf8")).toContain("rolldown-vite@7.1.0");
+    }
+    // Held to that alias, not to any package.
+    await locked(
+      { w: "workspace:*", evil: "^7" },
+      (packages) => Object.assign(packages["vite@7.1.0"], { name: "evil", integrity: evil }),
+      { workspaces: ["packages/*"] },
+    );
+    await refused("ELOCK");
+  });
+
+  it("takes a peer on a scoped alias, a JSR one, and the root's alias of vite", async () => {
+    publish("@jsr/std__path", "1.0.0");
+    publish("rolldown-vite", "7.1.0");
+    publish("plugin", "1.0.0", undefined, undefined, { "@std/path": "^1" });
+    const path = { "@std/path": "npm:@jsr/std__path@^1" };
+    publish("mid", "1.0.0", undefined, { ...path, plugin: "^1" });
+    const optional = { peerDependenciesMeta: { vite: { optional: true } } };
+    publish("@vitest/mocker", "3.0.0", undefined, undefined, { vite: "^7" }, optional);
+    publish("vitest", "3.0.0", undefined, { "@vitest/mocker": "3.0.0" }, { vite: "^7" });
+    publish("@vitejs/plugin-vue", "6.0.0", undefined, undefined, { vite: "^7" });
+    publish("kit", "1.0.0", undefined, { "@vitejs/plugin-vue": "^6", vitest: "^3" });
+    const vite = { vite: "npm:rolldown-vite@^7", vitest: "^3", kit: "^1" };
+    const cases: [object, string[], string, string][] = [
+      [{ mid: "^1" }, ["mid", "plugin"], "@std/path", "@jsr/std__path@1.0.0"],
+      [{ ...path, plugin: "^1" }, ["plugin"], "@std/path", "@jsr/std__path@1.0.0"],
+      [vite, ["vitest", "@vitest/mocker"], "vite", "rolldown-vite@7.1.0"],
+      [vite, ["kit", "@vitejs/plugin-vue"], "vite", "rolldown-vite@7.1.0"],
+    ];
+    for (const [deps, chain, peer, real] of cases) {
+      await locked(deps, () => {});
+      for (const experimental of [base.experimental, pooled]) {
+        await rm(join(dir, "node_modules"), { recursive: true, force: true });
+        await upm.install({ ...base, frozen: true, experimental });
+        let at = join(dir, "node_modules", "x");
+        for (const name of chain) at = await realpath(join(dirname(at), name));
+        // A scoped package sits one directory deeper.
+        const nm = chain.at(-1)!.includes("/") ? dirname(dirname(at)) : dirname(at);
+        expect(await readFile(join(nm, peer, "index.js"), "utf8")).toContain(real);
+      }
+    }
+  });
+
+  it("takes a peer on what a tarball at the root aliases", async () => {
+    publish("real-host", "1.0.0");
+    publish("plugin", "1.0.0", undefined, undefined, { host: "^1" });
+    const kit = {
+      name: "kit",
+      version: "1.0.0",
+      dependencies: { host: "npm:real-host@^1", plugin: "^1" },
+    };
+    const tgz = makeTarball([
+      { path: "package.json", data: JSON.stringify(kit) },
+      { path: "index.js", data: "module.exports = 'kit';\n" },
+    ]);
+    await writeFile(join(dir, "kit.tgz"), tgz);
+    await locked({ kit: "file:kit.tgz" }, () => {});
+    for (const experimental of [base.experimental, pooled]) {
+      await rm(join(dir, "node_modules"), { recursive: true, force: true });
+      await upm.install({ ...base, frozen: true, experimental });
+      const plugin = await realpath(
+        join(await realpath(join(dir, "node_modules", "kit")), "..", "plugin"),
+      );
+      expect(await readFile(join(dirname(plugin), "host", "index.js"), "utf8")).toContain(
+        "real-host@1.0.0",
+      );
+    }
+  });
+
+  it("refuses a peer the walk would reach only through a name its dependent never aliased", async () => {
+    publish("host", "1.0.0");
+    publish("plugin", "1.0.0", undefined, undefined, { host: "^1" });
+    publish("kit", "1.0.0");
+    const evil = publish("evil", "1.0.0");
+    // A package of evil's own, which does alias host to it.
+    const voucher = publish("voucher", "1.0.0", undefined, { host: "npm:evil@^1" });
+    publish("mid", "1.0.0", undefined, { kit: "^1", plugin: "^1" });
+    // mid declares kit: the lock makes it voucher, as an alias, or gives kit voucher's tarball.
+    for (const alias of [true, false]) {
+      await locked({ mid: "^1", evil: "^1", voucher: "^1" }, (packages) => {
+        packages["kit@1.0.0"] = {
+          ...(alias && { name: "voucher" }),
+          integrity: voucher,
+          dependencies: { host: "1.0.0" },
+        };
+        Object.assign(packages["host@1.0.0"], { name: "evil", integrity: evil });
+        Object.assign(packages["plugin@1.0.0"], {
+          dependencies: { host: "1.0.0" },
+          peers: { host: "required" },
+        });
+      });
+      await refused("EMISMATCH");
+    }
+  });
+
+  it("refuses an edge the lock calls a peer on the root's tarball, under --prod too", async () => {
+    const tgz = makeTarball([
+      { path: "package.json", data: '{ "name": "host", "version": "1.0.0" }' },
+      { path: "index.js", data: "module.exports = 'tarball';\n" },
+    ]);
+    await writeFile(join(dir, "host.tgz"), tgz);
+    publish("host", "1.0.0");
+    publish("other", "1.0.0", undefined, { host: "^1" });
+    await locked({ host: "file:host.tgz", other: "^1" }, (packages) => {
+      Object.assign(packages["other@1.0.0"], {
+        dependencies: { host: "file:host.tgz" },
+        peerDependencies: { host: "^1" },
+        peers: { host: "required" },
+      });
+    });
+    await refused("EMISMATCH");
+    for (const experimental of [base.experimental, pooled]) {
+      const prod = { ...base, frozen: true, production: true, experimental };
+      await expect(upm.install(prod)).rejects.toMatchObject({ code: "EMISMATCH" });
+      // Nothing says the tree is done.
+      await expect(stat(join(dir, "node_modules", ".upm.json"))).rejects.toThrow();
+    }
+  });
 });
 
 describe("the order a store is filled in", () => {

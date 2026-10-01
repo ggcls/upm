@@ -1229,10 +1229,12 @@ describe("startup budget", () => {
     // within noise (46/42 and 116/114 ms). 163,284 with overrides, their rules loaded only where
     // package.json, pnpm-workspace.yaml or the lock has some, `--help` within noise (40.5/42 ms).
     // 163,321 with a top's own local tarball read from it unless a rule matched its edge.
+    // 163,432 with a workspace's two edge maps each held to its ranges, `--help` within noise
+    // (44.7/45.6 and 42.8/41 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(163_330);
+    expect(bytes).toBeLessThanOrEqual(163_432);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

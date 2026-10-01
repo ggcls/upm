@@ -1026,7 +1026,7 @@ function declaredPeers(m: RootManifest): Record<string, PeerKind> {
   const meta = m.peerDependenciesMeta ?? {};
   const out: Record<string, PeerKind> = {};
   for (const name of Object.keys(m.peerDependencies ?? {}).sort()) {
-    if (name in own || name in optional) continue;
+    if (Object.hasOwn(own, name) || Object.hasOwn(optional, name)) continue;
     out[name] = meta[name]?.optional === true ? "optional" : "required";
   }
   return out;
