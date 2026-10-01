@@ -59,8 +59,9 @@ export function* walk(at = "/"): Generator<[path: string, entry: Entry]> {
 
 /**
  * Install the shim as `globalThis.process`. Never over a real one: returns false and leaves it.
- * Linux x64 with glibc unless told otherwise, so optional native builds are the ones most
- * machines would get; there is no Node version, so every `engines.node` passes.
+ * Linux wasm32 with glibc unless told otherwise, so of the optional platform builds the tab gets
+ * the wasm ones (`-wasm32-wasi`), the only ones a browser can run; there is no Node version, so
+ * every `engines.node` passes.
  */
 export function installShim(options: ShimOptions = {}): boolean {
   if (globalThis.process) return false;
@@ -69,7 +70,7 @@ export function installShim(options: ShimOptions = {}): boolean {
 }
 
 export function createProcess(options: ShimOptions = {}) {
-  const { platform = "linux", arch = "x64", libc = "glibc" } = options;
+  const { platform = "linux", arch = "wasm32", libc = "glibc" } = options;
   const cwd = options.cwd ?? "/project";
   const home = options.home ?? "/home/user";
   const env = { ...options.env };

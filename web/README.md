@@ -50,8 +50,9 @@ Once that resolve is in, upm's own `install` runs in the tab: `src/lib/node.ts` 
 `process` in place whose `getBuiltinModule` hands out an in-memory `fs`, a posix `path` and
 `os`, and nothing else — hashing and gunzip stay WebCrypto and `DecompressionStream`, and with no
 `worker_threads` every pool runs on the one thread. The Explorer then shows the project
-(`node_modules/.upm`, the links, `upm.lock`) and the content store. The platform is Linux x64
-with glibc, so the optional native builds are the ones such a machine would get.
+(`node_modules/.upm`, the links, `upm.lock`) and the content store. The platform is Linux wasm32
+with glibc, so of the optional platform builds the tab gets the wasm ones, the only ones a
+browser can run.
 
 The `fs` lives in memory, since upm's sync calls cannot wait for OPFS, and the project is made
 fresh for each run. What outlives the tab is the store's content: `src/lib/opfs.ts` keeps it on

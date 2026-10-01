@@ -35,7 +35,7 @@ import { TopBar } from "./components/topbar.tsx";
 const insecure = fillCrypto();
 
 /** The platform ./lib/node.ts's shim says it is: the install skips other platforms' builds. */
-const PLATFORM = { os: "linux", cpu: "x64", libc: "glibc" };
+const PLATFORM = { os: "linux", cpu: "wasm32", libc: "glibc" };
 
 /** One query as it lands: each part is undefined while pending, an Error when it failed. */
 export interface View {
