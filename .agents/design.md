@@ -77,6 +77,11 @@ An unrelated manifest edit should not upgrade the rest of the tree. But a reused
 plugin must see the current host, not a peer binding copied from an older tree.
 Check both version stability and peer rebinding when changing lock reuse.
 
+The overrides a lockfile was made under are in it (`root.overrides`, normalized), so a
+changed rule makes it stale. A locked entry replays exact versions and no ranges, so one with
+an edge to a name whose rule changed is walked again from its manifest at its locked version,
+not replayed; one whose `-` went could have any edge back, so then every entry is.
+
 Do not equate an early resolver pick with a final dependency. Optional failures and
 peer settling can remove it. Prefetch may fill the cache, but must not decide what
 is linked or turn an optional failure into a required one.
@@ -88,8 +93,8 @@ do not claim byte verification from a size check.
 
 The install state carries two levels of evidence. Its `hash` describes the resolution and is
 compared with one computed from the lockfile; its `inputs` describe what that resolution was
-computed from (lockfile bytes, root manifest, each workspace's path and manifest, store,
-registry hosts, platform, flags), and an install whose inputs match checks only what the state
+computed from (lockfile bytes, root manifest, each workspace's path and manifest,
+`pnpm-workspace.yaml` when it holds overrides, store, registry hosts, platform, flags), and an install whose inputs match checks only what the state
 recorded — the links and bins of the root and of each workspace, the package dir each direct
 link lands on, the `.upm` entry names — without reading the graph. It costs a stat per direct
 dependency, never one per package; damage deeper in an entry is `--verify`'s to find. Both
@@ -117,8 +122,8 @@ versions, so a changed package.json still resolves as if there were no tree. The
 lockfile, not proof of the tree: the state still decides what is on disk. A frozen install
 never reads it, and a tree another manager's lockfile changed keeps none.
 
-`sameTree` also holds each top's pins to the ranges it declares, so a lockfile edited to pin
-another version under the same range is stale. An install that resolves writes `upm.lock`
+`sameTree` also holds each top's pins to the ranges it declares, or to the value of an override
+that reaches the edge, so a lockfile edited to pin another version under the same range is stale. An install that resolves writes `upm.lock`
 before the fill, so the link can run under it, and puts back what was there when the install
 fails: its integrities came from metadata, and no tarball proved them. A lockfile another
 install wrote since stays. `lock` writes from metadata alone.

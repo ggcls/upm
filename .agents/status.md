@@ -162,6 +162,13 @@ These need a scope decision, not just a patch:
   an excluded name) whose range would have taken an older one. Checking every locked version
   would need its date from the full document, a request per name. Start at `loadAged` in
   `src/registry.ts`.
+- Overrides (`readOverrides` in `src/overrides.ts`) change every edge, a top's included, and
+  installed packages' peer ranges. A rule scoped to a parent reaches that parent's own edges only;
+  deeper nesting is warned about and skipped, since a `name@version` has one set of edges. It
+  would need a package keyed by the rules over it, as peer copies would. A rule's range matches
+  an edge whose declared range intersects it, as npm and pnpm 12 match. Of
+  `pnpm-workspace.yaml` only `overrides` is read (`pnpmOverrides`); its `catalog:` values, which
+  pnpm 12 prefers to `$name`, are not supported, and neither are workspaces' own overrides.
 - No separate copies of a consumer for different peer environments. Different
   consumers can have different peer versions, but an own dependency can still conflict
   with that consumer's peer range. `--verify` reports such conflicts; it cannot fix them.

@@ -2,6 +2,7 @@
 // `.upm` symlink layout has no stable equivalent of; ours is keyed by identity.
 import { builtin } from "./builtin.ts";
 import { normalizeBin } from "./normalize-bin.ts";
+import type { Overrides, Parent } from "./overrides.ts";
 import { registryBase, tarballUrl } from "./registry.ts";
 import type { BaseFor } from "./registry.ts";
 import { pid } from "./runtime.ts";
@@ -90,6 +91,11 @@ export interface Lockfile {
     dependencies: Record<string, string>;
     /** The workspace patterns as declared, so a changed set is found without the glob. */
     workspaces?: string[];
+    /**
+     * The overrides the tree was resolved under, one `[parent>]name[@range]` selector each, so
+     * `lock` can tell when package.json changed them.
+     */
+    overrides?: Overrides;
   };
   /** By root-relative path. */
   workspaces?: Record<string, WorkspaceEntry>;
@@ -275,22 +281,32 @@ export function formatLockfile(lock: Lockfile): string {
   return `${JSON.stringify(out, undefined, 2)}\n`;
 }
 
+/** The root's overrides as `readOverrides` reads them, and the values of those that reach a top's edge. */
+export interface TopOverrides {
+  overrides: Overrides;
+  values?: (top: Parent | undefined, name: string) => string[];
+}
+
 /**
  * Whether the lockfile was made from this tree: the same workspace patterns, the same
  * workspaces at the same paths, names and versions, and in the root and in every workspace
- * the same declared ranges, each pinned to a version it allows — plus, in a workspace, the
- * same bins and peers, which its entry carries too. Anything else means a resolve; nothing
- * here needs the network.
+ * the same declared ranges, each pinned to a version it or an override of it allows — plus,
+ * in a workspace, the same bins and peers, which its entry carries too, and the same
+ * overrides. Anything else means a resolve; nothing here needs the network.
  */
 export function sameTree(
   lock: Lockfile,
   manifest: RootManifest,
   workspaces: { path: string; name: string; version: string; manifest: RootManifest }[],
+  { overrides, values }: TopOverrides = { overrides: {} },
 ): boolean {
   const patterns = JSON.stringify(declaredWorkspaces(manifest) ?? []);
   if (patterns !== JSON.stringify(lock.root.workspaces ?? [])) return false;
+  const same = JSON.stringify(sorted(overrides)) === JSON.stringify(sorted(lock.root.overrides));
+  if (!same) return false;
   if (!sameSpecs(declaredSpecs(manifest), lock.root.specs)) return false;
-  if (!pinsFit(lock, lock.root.specs, lock.root.dependencies)) return false;
+  const over = (top?: Parent) => (name: string) => values?.(top, name) ?? [];
+  if (!pinsFit(lock, lock.root.specs, lock.root.dependencies, "", over())) return false;
   const locked = lock.workspaces ?? {};
   if (Object.keys(locked).length !== workspaces.length) return false;
   return workspaces.every((ws) => {
@@ -299,7 +315,7 @@ export function sameTree(
     const shape = localShape(ws.manifest);
     if (!sameSpecs(shape.specs, entry.specs)) return false;
     const edges = { ...entry.optionalDependencies, ...entry.dependencies };
-    if (!pinsFit(lock, entry.specs, edges, ws.path)) return false;
+    if (!pinsFit(lock, entry.specs, edges, ws.path, over(ws))) return false;
     return (["bin", "peerDependencies", "peers"] as const).every(
       (field) =>
         JSON.stringify(sorted(shape[field]) ?? {}) === JSON.stringify(sorted(entry[field]) ?? {}),
@@ -308,38 +324,42 @@ export function sameTree(
 }
 
 /**
- * Whether each version a top pins is one its declared range could have picked, of the package
- * it names: an alias's own, and never one for a plain name. A lock edited by hand, or merged
- * badly, can pin anything under an unchanged range. A name in several groups is held to the
- * range the resolver walks; a tarball is the one its spec names, a workspace spec lands on a
- * workspace, and a tag has only its name to compare.
+ * Whether each version a top pins is one its declared range, or the value of an override that
+ * reaches the edge, could have picked, of the package it names: an alias's own, and never one
+ * for a plain name. A lock edited by hand, or merged badly, can pin anything under an unchanged
+ * range. A name in several groups is held to the range the resolver walks; a tarball is the one
+ * its spec names, a workspace spec lands on a workspace, and a tag has only its name to compare.
  */
 function pinsFit(
   lock: Lockfile,
   specs: RootSpecs = {},
   edges: Record<string, string> = {},
   base = "",
+  overridden: (name: string) => string[] = () => [],
 ): boolean {
   return rootEdges(specs).every(([name, raw]) => {
     if (!Object.hasOwn(edges, name)) return true;
     const pinned = edges[name]!;
-    let spec: Spec;
-    try {
-      spec = parseDep(name, raw);
-    } catch {
-      return true; // the resolve says what is wrong with it
-    }
-    if (spec.type === "tarball") return pinned === tarballSource(spec.fetchSpec, base);
-    if (spec.type === "workspace") return pinned.startsWith("link:");
-    const entry = lock.packages[`${name}@${pinned}`];
-    if (entry?.version !== undefined) return false; // a tarball, for a registry spec
-    if (!parse(pinned)) return true; // a workspace, which a plain spec may land on
-    if ((entry?.name ?? packageOf(entry?.resolved, pinned) ?? name) !== spec.fetchName) {
-      return false;
-    }
-    // As `pickManifest` picks: an exact version is one key, and `*` takes any tagged version.
-    if (spec.type === "version") return parse(spec.fetchSpec)?.version === pinned;
-    return spec.type !== "range" || spec.fetchSpec === "*" || satisfies(pinned, spec.fetchSpec);
+    return [raw, ...overridden(name)].some((range, i) => {
+      let spec: Spec;
+      try {
+        spec = parseDep(name, range);
+      } catch {
+        return true; // the resolve says what is wrong with it
+      }
+      // An override's tarball is the root's path, the top's own one its own.
+      if (spec.type === "tarball") return pinned === tarballSource(spec.fetchSpec, i ? "" : base);
+      if (spec.type === "workspace") return pinned.startsWith("link:");
+      const entry = lock.packages[`${name}@${pinned}`];
+      if (entry?.version !== undefined) return false; // a tarball, for a registry spec
+      if (!parse(pinned)) return true; // a workspace, which a plain spec may land on
+      if ((entry?.name ?? packageOf(entry?.resolved, pinned) ?? name) !== spec.fetchName) {
+        return false;
+      }
+      // As `pickManifest` picks: an exact version is one key, and `*` takes any tagged version.
+      if (spec.type === "version") return parse(spec.fetchSpec)?.version === pinned;
+      return spec.type !== "range" || spec.fetchSpec === "*" || satisfies(pinned, spec.fetchSpec);
+    });
   });
 }
 
@@ -450,12 +470,14 @@ function canonical(from: LockEntry): LockEntry {
 
 function root(from: Lockfile["root"]): Lockfile["root"] {
   const specs = canonicalSpecs(from.specs);
+  const overrides = sorted(from.overrides);
   return {
     ...(from.name !== undefined && { name: from.name }),
     ...(from.version !== undefined && { version: from.version }),
     ...(specs && { specs }),
     dependencies: sorted(from.dependencies) ?? {},
     ...(from.workspaces?.length && { workspaces: from.workspaces }),
+    ...(overrides && { overrides }),
   };
 }
 
@@ -542,6 +564,7 @@ function validate(value: unknown): Lockfile {
   links(lock.root.dependencies, "root.dependencies", known, true);
   checkTop(lock.root.specs, lock.root.dependencies, "root");
   stringList(lock.root.workspaces, "root.workspaces");
+  stringMap(lock.root.overrides, "root.overrides");
   return lock;
 }
 

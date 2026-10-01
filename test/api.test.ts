@@ -134,13 +134,14 @@ describe("api", () => {
   it("says which package.json fields that change the tree it does not apply", async () => {
     const manifest = {
       dependencies: { nanoid: "^5" },
-      overrides: { nanoid: "5.0.0" },
+      // Applied, but for the rule nested too deep for a package's one set of edges.
+      overrides: { nanoid: "5.0.0", a: { b: { c: "1.0.0" } } },
       resolutions: {},
       pnpm: { overrides: { nanoid: "5.0.0" }, patchedDependencies: { a: "a.patch" } },
     };
     await writeFile(join(dir, "package.json"), JSON.stringify(manifest));
     const said =
-      "ignoring overrides, pnpm.overrides, pnpm.patchedDependencies in package.json: upm does not apply them";
+      "ignoring overrides.a.b, pnpm.patchedDependencies in package.json: upm does not apply them";
     await upm.install(base);
     expect(lines).toContain(said);
     // A no-op install read nothing new, so it says nothing new.
@@ -635,6 +636,92 @@ describe("api", () => {
     expect((await readJson(lockFile)).root.dependencies).toEqual({ nanoid: "4.0.0" });
     const installed = join(dir, "node_modules", "nanoid", "index.js");
     expect(await readFile(installed, "utf8")).toContain("nanoid 4");
+  });
+
+  it("links what the overrides pick, and resolves again when they change", async () => {
+    const four = makeTarball([{ path: "index.js", data: 'module.exports = "nanoid 4";\n' }]);
+    serve("nanoid", { "4.0.0": four, "5.0.0": tarball });
+    const dependencies = { nanoid: "^4" };
+    const json = JSON.stringify({ name: "wrap", version: "1.0.0", dependencies });
+    serve("wrap", { "1.0.0": makeTarball([{ path: "package.json", data: json }]) });
+    const doc = JSON.parse(Buffer.from(files["/wrap"]!).toString());
+    doc.versions["1.0.0"].dependencies = dependencies;
+    files["/wrap"] = Buffer.from(JSON.stringify(doc));
+    const manifest = (overrides: object) =>
+      writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ dependencies: { wrap: "^1" }, overrides }),
+      );
+    // What wrap's own `require("nanoid")` finds.
+    const nanoid = async () => {
+      const wrap = await realpath(join(dir, "node_modules", "wrap"));
+      return await readFile(join(wrap, "..", "nanoid", "index.js"), "utf8");
+    };
+
+    await manifest({ nanoid: "5.0.0" });
+    await upm.install(base);
+    const lockFile = join(dir, "upm.lock");
+    const locked = await readJson(lockFile);
+    expect(locked.root.overrides).toEqual({ nanoid: "5.0.0" });
+    expect(locked.packages["wrap@1.0.0"].dependencies).toEqual({ nanoid: "5.0.0" });
+    expect(await nanoid()).toContain("nanoid");
+    expect(await nanoid()).not.toContain("nanoid 4");
+
+    await manifest({});
+    await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({ code: "ELOCK" });
+    await upm.install(base);
+    expect((await readJson(lockFile)).root.overrides).toBeUndefined();
+    expect(await nanoid()).toContain("nanoid 4");
+  });
+
+  it("reads the overrides of pnpm-workspace.yaml, and sees it change", async () => {
+    const four = makeTarball([{ path: "index.js", data: 'module.exports = "nanoid 4";\n' }]);
+    serve("nanoid", { "4.0.0": four, "5.0.0": tarball });
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^5" } }));
+    const yaml = join(dir, "pnpm-workspace.yaml");
+    await writeFile(yaml, "packages:\n- .\noverrides:\n  nanoid: 4.0.0 # pinned\n");
+    await upm.install(base);
+    const lockFile = join(dir, "upm.lock");
+    expect((await readJson(lockFile)).root).toMatchObject({
+      overrides: { nanoid: "4.0.0" },
+      dependencies: { nanoid: "4.0.0" },
+    });
+    const installed = join(dir, "node_modules", "nanoid", "index.js");
+    expect(await readFile(installed, "utf8")).toContain("nanoid 4");
+    expect(await upm.install(base)).toMatchObject({ upToDate: true });
+    // Only the yaml moves: no longer a no-op, and no longer a lockfile to install frozen.
+    await writeFile(yaml, "packages:\n- .\n");
+    await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({ code: "ELOCK" });
+    expect(await upm.install(base)).toMatchObject({ upToDate: false });
+    expect((await readJson(lockFile)).root.overrides).toBeUndefined();
+    expect(await readFile(installed, "utf8")).not.toContain("nanoid 4");
+    // And back, so a yaml that gains its overrides is seen too.
+    await writeFile(yaml, "overrides:\n  nanoid: 4.0.0\n");
+    expect(await upm.install(base)).toMatchObject({ upToDate: false });
+    expect(await readFile(installed, "utf8")).toContain("nanoid 4");
+  });
+
+  it("overrides a workspace's own dependency, and installs frozen from that lock", async () => {
+    const four = makeTarball([{ path: "index.js", data: 'module.exports = "nanoid 4";\n' }]);
+    serve("nanoid", { "4.0.0": four, "5.0.0": tarball });
+    const root = { workspaces: ["packages/*"], overrides: { nanoid: "5.0.0" } };
+    await writeFile(join(dir, "package.json"), JSON.stringify(root));
+    const at = join(dir, "packages", "a");
+    await mkdir(at, { recursive: true });
+    const ws = { name: "a", version: "1.0.0", dependencies: { nanoid: "^4" } };
+    await writeFile(join(at, "package.json"), JSON.stringify(ws));
+    await upm.install(base);
+    const lockFile = join(dir, "upm.lock");
+    expect((await readJson(lockFile)).workspaces["packages/a"].dependencies).toEqual({
+      nanoid: "5.0.0",
+    });
+    const installed = join(at, "node_modules", "nanoid", "index.js");
+    expect(await readFile(installed, "utf8")).not.toContain("nanoid 4");
+    // A pin outside the workspace's own range is the override's, not a stale lock.
+    await rm(join(dir, "node_modules"), { recursive: true });
+    await rm(join(at, "node_modules"), { recursive: true });
+    await upm.install({ ...base, frozen: true });
+    expect(await readFile(installed, "utf8")).not.toContain("nanoid 4");
   });
 
   it("keeps no lockfile from an install whose tarball failed its integrity", async () => {

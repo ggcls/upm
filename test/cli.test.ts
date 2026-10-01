@@ -1226,11 +1226,13 @@ describe("startup budget", () => {
     // installs, the graph walk lazy, `--help` within noise (40.5/40.5 ms). 161,030 with an older
     // index's aliases written back once read, `--help` within noise (41/41 and 110/108 ms).
     // 161,302 with a downloaded tarball's last-modified held to the release cutoff, `--help`
-    // within noise (46/42 and 116/114 ms).
+    // within noise (46/42 and 116/114 ms). 163,284 with overrides, their rules loaded only where
+    // package.json, pnpm-workspace.yaml or the lock has some, `--help` within noise (40.5/42 ms).
+    // 163,321 with a top's own local tarball read from it unless a rule matched its edge.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(161_310);
+    expect(bytes).toBeLessThanOrEqual(163_330);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
@@ -1247,6 +1249,8 @@ describe("startup budget", () => {
       "vouch.ts",
       "index-upgrade.ts",
       "newer.ts",
+      "overrides.ts",
+      "yaml.ts",
     ];
     for (const name of lazy) {
       expect(modules.has(name)).toBe(false);
