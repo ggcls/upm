@@ -63,6 +63,12 @@ stale. The state records each tarball's stamp from just before its bytes were ch
 never after, so a write that lands during an install shows as another stamp next time; the
 no-op check trusts nothing it has no stamp for.
 
+A url has no name to hold its bytes to, and the store is keyed by integrity alone, so an index
+lists the urls its tarball was fetched from, and a url's entry is filled and linked only from
+one that lists that url (`vouched` in `src/store.ts`); any other is asked of the url, checked,
+and the url listed. An index from before the list costs that url one request, and fails
+offline. Without this, a lockfile could give a url any tarball in the store.
+
 ## Stability is not freshness
 
 An unrelated manifest edit should not upgrade the rest of the tree. But a reused

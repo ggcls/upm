@@ -407,7 +407,11 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
       (async () => {
         await options.awaiting?.(entry.pkg.integrity)?.catch(() => {});
         const { pkg } = entry;
-        const bytes = store.indexSize(pkg.integrity);
+        // A url's bytes are another tarball's until the store has them from that url.
+        const bytes =
+          fromUrl(pkg) && !store.vouches(pkg.resolved, pkg.integrity)
+            ? 0
+            : store.indexSize(pkg.integrity);
         // An optional the fetch step was allowed to drop is not linked. The tree is then short of
         // something the graph named, recorded complete only when asking again would not help.
         if (bytes === 0 || (pkg.optional && !store.index(pkg.integrity))) {
@@ -1363,4 +1367,9 @@ function reason(error: unknown): string {
 
 function fail(message: string, code: string): Error {
   return Object.assign(new Error(message), { code });
+}
+
+/** A tarball dependency fetched from its url, not read off the disk. */
+export function fromUrl(pkg: ResolvedPackage): boolean {
+  return pkg.source !== undefined && !pkg.source.startsWith("file:");
 }

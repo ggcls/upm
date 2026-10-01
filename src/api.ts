@@ -6,7 +6,7 @@ import { readConfig } from "./config.ts";
 import type { Config } from "./config.ts";
 import { pruneStore, sweepEntries, sweepTemps } from "./gc.ts";
 import { shortHash } from "./keys.ts";
-import { linkTree, treeStanding } from "./link.ts";
+import { fromUrl, linkTree, treeStanding } from "./link.ts";
 import type { LinkPool } from "./link.ts";
 import {
   FOREIGN,
@@ -669,7 +669,8 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
     await Promise.all(
       nearestFirst(resolution, wanted).map(async (pkg) => {
         try {
-          await into.ensure(tarballOf(dir, pkg.resolved, pkg.source), pkg.integrity);
+          const at = tarballOf(dir, pkg.resolved, pkg.source);
+          await into.ensure(at, pkg.integrity, pkg.source !== undefined);
           fetched++;
           tell();
         } catch (error) {
@@ -702,7 +703,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   // A store that holds every index already has nothing to fill: the linker then reads no index
   // for a count as each "lands", and builds from the start. 64 ms of `large`'s link.
   const filling =
-    settled || (!options.verify && wanted.every((pkg) => store.indexSize(pkg.integrity) > 0))
+    settled || (!options.verify && wanted.every((pkg) => held(store, pkg)))
       ? undefined
       : fill(store).finally(() => {
           trace("fill");
@@ -1009,7 +1010,8 @@ function prefetch(
           if (read !== undefined && !runsOn({ ...pkg, libc: read }, here)) return true;
         }
         picked?.();
-        store.add(tarballOf(dir, pkg.resolved, pkg.source), pkg.integrity).catch(() => {});
+        const at = tarballOf(dir, pkg.resolved, pkg.source);
+        store.add(at, pkg.integrity, pkg.source !== undefined).catch(() => {});
         return false;
       })(),
     );
@@ -1669,7 +1671,7 @@ export async function fetchLockfile(options: FetchLockfileOptions = {}): Promise
     wanted.map(async (pkg) => {
       try {
         const at = tarballOf(dir, pkg.resolved, pkg.source);
-        return fetched(pkg, await store.add(at, pkg.integrity));
+        return fetched(pkg, await store.add(at, pkg.integrity, pkg.source !== undefined));
       } catch (error) {
         // A failure inside an optional subtree must never fail the install.
         if (!pkg.optional) throw error;
@@ -2103,6 +2105,14 @@ function tarballReader(
 function tarballOf(dir: string, resolved: string, source?: string): Tarball {
   if (!source?.startsWith("file:")) return resolved;
   return { path: builtin.path.resolve(dir, source.slice("file:".length)) };
+}
+
+/** Whether the store holds a package's tarball: a url dependency's only as fetched from there. */
+function held(store: Store, pkg: ResolvedPackage): boolean {
+  return (
+    store.indexSize(pkg.integrity) > 0 &&
+    (!fromUrl(pkg) || store.vouches(pkg.resolved, pkg.integrity))
+  );
 }
 
 function fail(message: string, code: ErrorCode): Error {

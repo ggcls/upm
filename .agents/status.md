@@ -59,19 +59,19 @@ compatibility. Keep this page about open work, not completed implementation step
   is dropped as a missing one is. A targeted repair (refetch the one integrity the failure
   names, link again) would keep the fast fill and the fast repair. Start at `installTree`'s
   `ELINK` catch in `src/api.ts`.
-- **A url tarball's bytes are the lockfile's word:** a url dependency's entry is linked from
-  whatever the store holds under its integrity, and nothing checks what those bytes are, so a
-  lock edited to give it the integrity of any tarball already in the store (another package's
-  from any project on the machine) installs that under the dependency's name, frozen or not.
-  A registry package is held to its name; a url has no name to hold it to. A fix needs the
-  store to know which urls an integrity was fetched from, or a request per url tarball. Start
-  at `adopt` in `src/store.ts` and where `linkTree` in `src/link.ts` skips `mismatch`.
 - **A url tarball changed in place is not picked up:** the lockfile pins its bytes, so a
   server that now serves others fails the install with `EINTEGRITY` naming the source (`stale`
   in `src/api.ts`); the way out is remove and add. A local one is read again (`movedTarballs`).
   Checking a url on every install would cost a request and fail offline; the fix is an explicit
   `upm update <name>` that unlocks a name's entries and resolves them again, which registry
   packages want too. Start at `keep` in `src/api.ts`.
+- **A local tarball's integrity is the lockfile's word while its stamp holds:** a `file:`
+  tarball with the stamp the state recorded is taken as the bytes the lockfile pins
+  (`movedTarballs` in `src/tarball-deps.ts`), but the state does not say which integrity it
+  was checked against. So a `upm.lock` edited in an installed checkout to give it another
+  stored tarball's integrity links those bytes under its name; a fresh tree reads the file
+  and calls the lockfile stale. A fix records the integrity beside each stamp (`filesOf` in
+  `src/api.ts`) and trusts the stamp only while the lockfile still pins it.
 - **CRLF `#!` line:** npm and pnpm strip a `\r` from a bin's `#!` line on Linux and macOS,
   so a bin published from Windows still runs; here `env` looks for `node\r` and fails. The
   fix belongs in the unpack, before the file's hash, for declared bins only; a big file the
@@ -104,12 +104,13 @@ compatibility. Keep this page about open work, not completed implementation step
 
 - **Store backend gaps:** `StoreBackend` (`src/store-backend.ts`) is an API option only;
   there is no CLI or config for it. Load a module only from user config or the environment,
-  never a project's `.npmrc`, which would run a cloned repo's code on install. Tarball
-  dependencies (`adopt` in `src/store.ts`) skip it, and a package already in the local store
-  is never handed to it, so a warm machine does not fill it. Each miss asks it once before its
-  download; one `getMany` of every index key from the lockfile at fill start would spare the
-  per-package probe. An untrusted remote (HTTP, S3) would need the tarball kept too, so the
-  lockfile's integrity can be checked; values move whole, not streamed. Measure an empty
+  never a project's `.npmrc`, which would run a cloned repo's code on install. A tarball
+  dependency is never read from it (`adopt` and a url's `add` in `src/store.ts`), and a
+  package already in the local store is never handed to it, so a warm machine does not fill
+  it. Each miss asks it once before its download; one `getMany` of every index key from the
+  lockfile at fill start would spare the per-package probe. An untrusted remote (HTTP, S3)
+  would need the tarball kept too, so the lockfile's integrity can be checked; values move
+  whole, not streamed. Measure an empty
   backend against none with `bench/ab.sh` before and after.
 
 ## Deliberate limits

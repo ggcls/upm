@@ -33,7 +33,7 @@ export async function readTarball(
     read =
       pinned === undefined
         ? await store.adopt(at)
-        : { index: (await store.add(at, pinned)).index, integrity: pinned };
+        : { index: (await store.add(at, pinned, true)).index, integrity: pinned };
   } catch (error) {
     throw stale(error, source);
   }

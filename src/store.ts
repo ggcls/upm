@@ -47,6 +47,11 @@ export interface PackageIndex {
    * empty when none. Missing from an index written before it was kept: the package.json is read.
    */
   aliases?: Record<string, string>;
+  /**
+   * The urls a tarball dependency's bytes were fetched from. The store is keyed by integrity
+   * alone, so it holds a url's bytes only once they came from that url (`vouched`).
+   */
+  sources?: string[];
 }
 
 /**
@@ -95,7 +100,15 @@ export interface Store {
   indexPath(integrity: string): string;
   /** Bytes of the index on disk, without reading it; 0 when there is none, or could be none. */
   indexSize(integrity: string): number;
-  add(tarball: Tarball, integrity: string): Promise<{ index: PackageIndex; cached: boolean }>;
+  /**
+   * `source` says `tarball` is a url dependency's own url: an index counts as its bytes only
+   * when it lists that url, else the url is fetched and checked, then listed.
+   */
+  add(
+    tarball: Tarball,
+    integrity: string,
+    source?: boolean,
+  ): Promise<{ index: PackageIndex; cached: boolean }>;
   /**
    * A tarball whose integrity is not known yet, which is a tarball dependency the first time it
    * is resolved: read whole and stored under the sha512 of its bytes, which is its integrity
@@ -112,7 +125,9 @@ export interface Store {
    * here is not read, which is 559 reads and parses on a warm `nuxt`. A torn index passes as
    * present and fails where it is read, which the linker answers by filling again.
    */
-  ensure(tarball: Tarball, integrity: string): Promise<void>;
+  ensure(tarball: Tarball, integrity: string, source?: boolean): Promise<void>;
+  /** Whether the store holds `integrity` as fetched from the url `tarball`. */
+  vouches(tarball: string, integrity: string): boolean;
   contentPath(hash: string, exec: boolean): string;
   /** Absolute path of a file's content. */
   blobPath(file: FileEntry): string;
@@ -297,20 +312,30 @@ export function createStore(options: StoreOptions = {}): Store {
     return true;
   }
 
-  async function build(tarball: Tarball, integrity: string): Promise<PackageIndex> {
+  async function build(
+    tarball: Tarball,
+    url: string | undefined,
+    integrity: string,
+  ): Promise<PackageIndex> {
     const hit = readIndex(integrity);
     // Sizes are not enough to verify: a file edited in place keeps its size.
     const check = verify && (await import("./verify.ts"));
-    if (hit && (!check || check.sound(store, hit.files, indexPath(integrity), options.rehash))) {
+    // A hit its url never gave may be any tarball's bytes: asked of the url, then listed.
+    if (
+      hit &&
+      (url === undefined || vouched(hit, url)) &&
+      (!check || check.sound(store, hit.files, indexPath(integrity), options.rehash))
+    ) {
       return hit;
     }
+    const sources = withSource(hit, url);
     // A hit that failed the check has damaged content, so rewrite rather than skip. The pool
     // is made here, on the first miss, and starts its threads as tarballs land with no idle
     // one and enough behind them — so an install that finds everything cached never pays
     // for one, and nor does one of a package or five. Its loading is not waited on here: the
     // tarball is asked for now, and the pool is wanted once its headers or its bytes are in.
     if (!loading) void loadPool();
-    if (backend) {
+    if (backend && url === undefined) {
       const kept = await (await client())?.fetch(integrity, !!hit);
       if (kept) return await publish(integrity, kept);
     }
@@ -320,7 +345,7 @@ export function createStore(options: StoreOptions = {}): Store {
       // The address cache, in place before a download slot is taken; already, on a cold walk.
       const lookups = cacheLookups();
       if (lookups) await lookups;
-      const index = await download(tarball, integrity, hit !== undefined);
+      const index = await download(tarball, integrity, hit !== undefined, sources);
       if (backend?.set) void client().then((it) => it?.put(integrity, index, tarball));
       return index;
     } finally {
@@ -362,15 +387,20 @@ export function createStore(options: StoreOptions = {}): Store {
   }
 
   /** The tarball fetched, unpacked and its index written. */
-  async function download(tarball: Tarball, integrity: string, repair: boolean) {
+  async function download(
+    tarball: Tarball,
+    integrity: string,
+    repair: boolean,
+    sources: string[] | undefined,
+  ) {
     try {
-      return await fill(tarball, integrity, repair, true);
+      return await fill(tarball, integrity, repair, sources, true);
     } catch (error) {
       // A dead worker reported nothing, so its tarball is simply un-unpacked — but the bytes
       // were transferred to it rather than copied, so the redo starts back at the network.
       // Once, and here: whatever killed a worker must not be handed to another one.
       if ((error as { code?: string }).code !== WORKER_DIED) throw error;
-      return await fill(tarball, integrity, repair, false);
+      return await fill(tarball, integrity, repair, sources, false);
     }
   }
 
@@ -385,7 +415,12 @@ export function createStore(options: StoreOptions = {}): Store {
   }
 
   /** The index is what makes the content findable, so only this thread ever writes one. */
-  async function publish(integrity: string, index: PackageIndex): Promise<PackageIndex> {
+  async function publish(
+    integrity: string,
+    index: PackageIndex,
+    sources?: string[],
+  ): Promise<PackageIndex> {
+    if (sources) index = { ...index, sources };
     const file = writer.indexPath(integrity);
     await writer.ensureDir(builtin.path.dirname(file));
     shards?.add(shardOf(file));
@@ -406,6 +441,7 @@ export function createStore(options: StoreOptions = {}): Store {
     tarball: Tarball,
     integrity: string,
     repair: boolean,
+    sources: string[] | undefined,
     offer: boolean,
     again = false,
   ): Promise<PackageIndex> {
@@ -423,13 +459,14 @@ export function createStore(options: StoreOptions = {}): Store {
     held += pulled.size;
     try {
       // Held until the index is written, or the index writes would queue past the bound.
-      if ("streamed" in pulled) return await publish(integrity, await pulled.streamed);
+      if ("streamed" in pulled) return await publish(integrity, await pulled.streamed, sources);
       // The hash is checked where the unpack runs, so a worker takes that off this thread too.
       const { bytes } = pulled;
       const ready = offer ? (pool ?? (await loadPool())) : undefined;
       const offered = ready?.offer(integrity, bytes, repair, behind);
       trace("offer", { i: integrity, behind, taken: !!offered });
-      return await publish(integrity, await (offered ?? unpackHere(integrity, bytes, repair)));
+      const index = await (offered ?? unpackHere(integrity, bytes, repair));
+      return await publish(integrity, index, sources);
     } catch (error) {
       if ((error as { code?: string }).code !== "EINTEGRITY") throw error;
       // Cut short or not, nothing framed these bytes: they are worth one more download.
@@ -442,7 +479,7 @@ export function createStore(options: StoreOptions = {}): Store {
       unheld(pulled.size);
     }
     trace("unframed", { i: integrity });
-    return await fill(tarball, integrity, repair, offer, true);
+    return await fill(tarball, integrity, repair, sources, offer, true);
   }
 
   /**
@@ -608,16 +645,26 @@ export function createStore(options: StoreOptions = {}): Store {
       if (size > 0) sizes.set(integrity, size);
       return size;
     },
-    async ensure(tarball, integrity) {
-      if (!verify && (loaded.has(integrity) || store.indexSize(integrity) > 0)) return;
-      await store.add(tarball, integrity);
+    async ensure(tarball, integrity, source) {
+      const url = urlOf(tarball, source);
+      const there =
+        url === undefined
+          ? loaded.has(integrity) || store.indexSize(integrity) > 0
+          : store.vouches(url, integrity);
+      if (verify || !there) await store.add(tarball, integrity, source);
     },
-    async add(tarball, integrity) {
-      // Share one download between concurrent callers asking for the same tarball.
+    vouches: (tarball, integrity) => vouched(readIndex(integrity), tarball),
+    async add(tarball, integrity, source) {
+      const url = urlOf(tarball, source);
+      // Share one download between concurrent callers asking for the same tarball. A url's
+      // waits for the one before it, and takes it only if it came from that url.
       const shared = pending.get(integrity);
-      if (shared) return { index: await shared, cached: true };
-
-      const hit = build(tarball, integrity).catch((error: unknown) => {
+      if (shared && url === undefined) return { index: await shared, cached: true };
+      const again = () => build(tarball, url, integrity);
+      const run = shared
+        ? shared.then((index) => (vouched(index, url!) ? index : again()), again)
+        : again();
+      const hit = run.catch((error: unknown) => {
         pending.delete(integrity);
         throw error;
       });
@@ -638,11 +685,16 @@ export function createStore(options: StoreOptions = {}): Store {
       for (const block of bytes) hash.update(block);
       const integrity = `sha512-${toBase64(await hash.digest())}`;
       const hit = readIndex(integrity);
+      // The bytes came from here, so this url is theirs from now on.
+      const sources = withSource(hit, typeof tarball === "string" ? tarball : undefined);
       // Checked whatever `verify` says: the caller reads its package.json next, and a file the
       // index names but the disk lost would fail that read with nothing to repair it.
-      if (hit && intact(hit)) return { index: hit, integrity };
+      if (hit && intact(hit)) {
+        const listed = sources === hit.sources;
+        return { index: listed ? hit : await publish(integrity, hit, sources), integrity };
+      }
       const index = await unpackHere(integrity, bytes, hit !== undefined);
-      return { index: await publish(integrity, index), integrity };
+      return { index: await publish(integrity, index, sources), integrity };
     },
     close() {
       pool?.close();
@@ -652,6 +704,22 @@ export function createStore(options: StoreOptions = {}): Store {
     },
   };
   return store;
+}
+
+/** The url a tarball dependency is fetched from: none for a registry package or a path. */
+function urlOf(tarball: Tarball, source: boolean | undefined): string | undefined {
+  return source && typeof tarball === "string" ? tarball : undefined;
+}
+
+/** Whether `index` was fetched from `url`. A hand-edited `sources` is not a list: no. */
+function vouched(index: PackageIndex | undefined, url: string): boolean {
+  return Array.isArray(index?.sources) && index.sources.includes(url);
+}
+
+/** `index`'s sources with `url` among them: the same list when it is there already. */
+function withSource(index: PackageIndex | undefined, url?: string): string[] | undefined {
+  const sources = Array.isArray(index?.sources) ? index.sources : undefined;
+  return url === undefined || sources?.includes(url) ? sources : [...(sources ?? []), url];
 }
 
 /**

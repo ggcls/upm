@@ -27,6 +27,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as upm from "../src/index.ts";
 import { parseLockfile } from "../src/resolver.ts";
 import { stampOf } from "../src/state.ts";
+import { createStore } from "../src/store.ts";
 import { holdTree, TREE_HELD } from "../src/tree-lock.ts";
 import { hashOf } from "./hash.ts";
 import { makeTarball } from "./tarball.ts";
@@ -1156,6 +1157,79 @@ describe("tarball dependencies", () => {
       ["nanoid", false],
       ["remote", false],
     ]);
+  });
+
+  describe("a url's bytes in the store", () => {
+    const evil = makeTarball([
+      { path: "package.json", data: '{"name":"evil","version":"1.0.0"}' },
+      { path: "index.js", data: 'module.exports = "evil";\n' },
+    ]);
+    const remotePath = "/files/remote-1.0.0.tgz";
+    const nm = () => join(dir, "node_modules");
+    const index = () => createStore({ dir: base.store }).indexPath(hashOf(remote));
+
+    beforeEach(() => {
+      files["/files/evil-1.0.0.tgz"] = evil;
+    });
+
+    it("are another tarball's when the lock gives it their integrity", async () => {
+      const dependencies = { remote: url(), evil: `${registry()}/files/evil-1.0.0.tgz` };
+      await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies }));
+      await upm.install(base); // the store now holds evil's tarball
+      const file = join(dir, "upm.lock");
+      const lock = await readJson(file);
+      lock.packages[`remote@${url()}`].integrity = hashOf(evil);
+      await writeFile(file, JSON.stringify(lock, null, 2));
+      await rm(nm(), { recursive: true });
+
+      const before = served.length;
+      await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({
+        code: "EINTEGRITY",
+      });
+      // Asked of the url, whose bytes are not evil's.
+      expect(served.slice(before)).toEqual([remotePath]);
+      await expect(upm.install({ ...base, frozen: true, offline: true })).rejects.toMatchObject({
+        code: "EOFFLINE",
+      });
+      // A resolve reads the url's package.json from the same bytes, and a fetch fills the same.
+      await expect(upm.install(base)).rejects.toMatchObject({ code: "EINTEGRITY" });
+      await expect(upm.fetchLockfile(base)).rejects.toMatchObject({ code: "EINTEGRITY" });
+      await expect(readFile(join(nm(), "remote", "index.js"), "utf8")).rejects.toThrow();
+    });
+
+    it("are taken from a store that fetched them from the url, with no request", async () => {
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ dependencies: { remote: url() } }),
+      );
+      await upm.install(base);
+      expect(served).toEqual([remotePath]);
+      expect((await readJson(index())).sources).toEqual([url()]);
+      await rm(nm(), { recursive: true });
+      await upm.install({ ...base, frozen: true, offline: true });
+      await upm.fetchLockfile({ ...base, offline: true });
+      expect(served).toEqual([remotePath]);
+    });
+
+    it("are fetched once more when an older index cannot say where they came from", async () => {
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ dependencies: { remote: url() } }),
+      );
+      await upm.install(base);
+      const { sources: _, ...older } = await readJson(index());
+      await writeFile(index(), JSON.stringify(older));
+      await rm(nm(), { recursive: true });
+      await expect(upm.install({ ...base, frozen: true, offline: true })).rejects.toMatchObject({
+        code: "EOFFLINE",
+      });
+      await upm.install({ ...base, frozen: true });
+      expect(served).toEqual([remotePath, remotePath]);
+      expect((await readJson(index())).sources).toEqual([url()]);
+      await rm(nm(), { recursive: true });
+      await upm.install({ ...base, frozen: true });
+      expect(served).toHaveLength(2);
+    });
   });
 
   it("fetches nothing that only an off-platform tarball reaches", async () => {

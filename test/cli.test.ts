@@ -1219,11 +1219,13 @@ describe("startup budget", () => {
     // upm.lock, every edge and peer held to what its dependent's package.json declares, and a
     // top's tarball to its spec, `--help` within noise (52/51 and 129/130 ms), a warm and a
     // no-op install too. 159,228 with a name a disk folds onto a later one checked as that one,
-    // after a failed size check only.
+    // after a failed size check only. 160,062 with a url tarball's bytes taken only from an index
+    // that lists the url, `--help` within noise (28.6/28.4 and 35.8/36.5 ms), a warm and a no-op
+    // install too.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(159_230);
+    expect(bytes).toBeLessThanOrEqual(160_070);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
