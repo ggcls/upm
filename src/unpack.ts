@@ -71,7 +71,7 @@ interface Bin {
   room: number;
 }
 
-type BinFile = PartFile & { mode: number; hash?: string };
+type BinFile = PartFile & { mode: number; hash?: string; shebangCR?: number };
 
 /** A file big enough to hash and write while the rest of the tarball still inflates. */
 const STREAM_FILE = CHUNK;
@@ -284,6 +284,15 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
     // One block is a small tarball, and its files go straight to the disk if allowed.
     const io = tarball.length === 1 ? direct : pooled;
     const { bins, name, version, aliases } = manifestOf(found.get("package.json")?.data);
+    // The manifest may arrive last, after we hashed the bin's original bytes.
+    for (const path of bins) {
+      const file = found.get(path);
+      if (!file) continue;
+      const data = normalizeShebang(file.data);
+      if (data.length === file.data.length) continue;
+      file.data = data;
+      file.hash = await hashOf(data);
+    }
     const entries: FileEntry[] = [];
     const written = new Set<string>();
     const jobs: Promise<void>[] = [];
@@ -342,8 +351,7 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
         let bin = bins[0]!;
         for (const other of bins) if (other.weight < bin.weight) bin = other;
         if (spool && data.length !== size) {
-          const { hash, temp } = spool.close();
-          const file = { path, exec: false, chunk: -1, at: 0, size, mode, temp, hash };
+          const file = { path, exec: false, chunk: -1, at: 0, size, mode, ...spool.close() };
           bin.weight += FILE_COST; // its bytes are on disk already; the part only moves them
           latest.set(path, { bin, file });
           continue;
@@ -379,6 +387,23 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
       version,
       aliases,
     } = manifestOf(manifest && packed(manifest.bin, manifest.file));
+    try {
+      for (const path of declared) {
+        const entry = latest.get(path);
+        if (!entry) continue;
+        const { bin, file } = entry;
+        if (file.temp) await spool!.normalize(file);
+        else {
+          const data = packed(bin, file);
+          const normalized = normalizeShebang(data);
+          if (normalized !== data) data.set(normalized);
+          file.size = normalized.length;
+        }
+      }
+    } catch (error) {
+      spool?.abandon();
+      throw error;
+    }
     // As many parts as the bytes are worth, and none too small to be worth its message: the
     // lightest bins fold into the next lightest until that holds.
     const count = Math.max(1, Math.min(most, Math.ceil(total / PART_BYTES)));
@@ -392,7 +417,7 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
       parts = parts.slice(1).sort((a, b) => a.weight - b.weight);
     }
     const kept = new Set([...latest.values()].map(({ file }) => file.temp));
-    spool?.drop((temp) => kept.has(temp)); // a later entry for the path won, as tar has it
+    spool?.drop((temp) => kept.has(temp)); // replaced bins and earlier entries are no longer needed
     return parts.map(({ data, files }, i) => ({
       data,
       files: files.map(({ path, chunk, at, size, mode, temp, hash }) => {
@@ -472,8 +497,10 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
 interface Spool {
   /** `TarOptions.stream`: takes a file of at least STREAM_FILE bytes. */
   open(path: string, mode: number, size: number): ((chunk: Uint8Array) => void) | undefined;
-  /** The file the last `open` took: its hash, and the temp name holding its bytes. */
-  close(): { hash: string; temp: string };
+  /** The last file's hash, temp name, and any CR found at the end of its shebang. */
+  close(): { hash: string; temp: string; shebangCR?: number };
+  /** Replay a bin without its shebang CR into a new private temp, updating its hash and size. */
+  normalize(file: BinFile): Promise<void>;
   /** Remove the temps `keep` refuses. */
   drop(keep: (temp: string) => boolean): void;
   /** The parse failed: close what is open and remove every temp. */
@@ -488,8 +515,10 @@ interface Spool {
 function createSpool(files: string): Spool {
   const fs = builtin.fs;
   const temps: string[] = [];
-  let current: { fd: number; hash: import("node:crypto").Hash; temp: string } | undefined;
-  return {
+  let current:
+    | { fd: number; hash: import("node:crypto").Hash; temp: string; shebangCR?: number }
+    | undefined;
+  const spool: Spool = {
     open(_path, _mode, size) {
       if (size < STREAM_FILE) return undefined;
       if (temps.length === 0) fs.mkdirSync(files, { recursive: true });
@@ -497,17 +526,55 @@ function createSpool(files: string): Spool {
       const fd = fs.openSync(temp, "w", 0o600);
       temps.push(temp);
       current = { fd, hash: builtin.crypto.createHash("sha512"), temp };
+      // Remember an offset, not the line: the manifest may arrive later and the line has no limit.
+      let position = 0;
+      let previous = -1;
+      let scanning = true;
       return (chunk) => {
+        // Both #! and CRLF can straddle chunks; stop at the first LF or a different prefix.
+        for (let i = 0; scanning && i < chunk.length; i++) {
+          const byte = chunk[i]!;
+          if (position < 2 && byte !== (position === 0 ? 0x23 : 0x21)) {
+            scanning = false;
+          } else if (byte === 0x0a) {
+            if (previous === 0x0d) current!.shebangCR = position - 1;
+            scanning = false;
+          }
+          previous = byte;
+          position++;
+        }
         current!.hash.update(chunk);
         let at = 0;
         while (at < chunk.length) at += fs.writeSync(fd, chunk, at, chunk.length - at);
       };
     },
     close() {
-      const { fd, hash, temp } = current!;
+      const { fd, hash, temp, shebangCR } = current!;
       current = undefined;
       fs.closeSync(fd);
-      return { hash: `sha512-${hash.digest("base64")}`, temp };
+      return { hash: `sha512-${hash.digest("base64")}`, temp, shebangCR };
+    },
+    async normalize(file) {
+      const { shebangCR } = file;
+      if (shebangCR === undefined) return;
+      // Use the same writer and hasher; the old temp stays intact until the replay succeeds.
+      const write = spool.open(file.path, file.mode, file.size)!;
+      let at = 0;
+      for await (const chunk of fs.createReadStream(file.temp!, { highWaterMark: 64 * 1024 })) {
+        const cr = shebangCR - at;
+        if (cr >= 0 && cr < chunk.length) {
+          write(chunk.subarray(0, cr));
+          write(chunk.subarray(cr + 1));
+        } else {
+          write(chunk);
+        }
+        at += chunk.length;
+      }
+      if (at !== file.size) throw new Error(`Unexpected size of spool ${file.temp}`);
+      const { hash, temp } = spool.close();
+      file.hash = hash;
+      file.temp = temp;
+      file.size--;
     },
     drop(keep) {
       for (const temp of temps) if (!keep(temp)) fs.rmSync(temp, { force: true });
@@ -518,11 +585,24 @@ function createSpool(files: string): Spool {
       for (const temp of temps) fs.rmSync(temp, { force: true });
     },
   };
+  return spool;
 }
 
 /** A packed file's bytes. */
 function packed({ data }: Part, { chunk, at, size }: PartFile): Uint8Array {
   return new Uint8Array(data[chunk]!, at, size);
+}
+
+/** Strip only the CR before the first LF, and only when the file starts with a shebang. */
+function normalizeShebang(data: Uint8Array): Uint8Array {
+  if (data[0] !== 0x23 || data[1] !== 0x21) return data;
+  const lf = data.indexOf(0x0a);
+  if (lf < 0 || data[lf - 1] !== 0x0d) return data;
+  // Tar entries can be views into the caller's plain archive; keep those bytes intact.
+  const normalized = new Uint8Array(data.length - 1);
+  normalized.set(data.subarray(0, lf - 1));
+  normalized.set(data.subarray(lf), lf - 1);
+  return normalized;
 }
 
 /** The index of a tarball whose parts were written, from the blobs each part came back with. */
