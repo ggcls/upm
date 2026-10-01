@@ -9,7 +9,7 @@
 ⚡ A fast, tiny package manager for the npm registry, written in TypeScript.
 
 - 🟦 **Pure JS:** built with TypeScript and Node.js builtins.
-- 🪶 **Small:** about 306 KB on disk (103 KB packed), small enough to bundle into your own tools.
+- 🪶 **Small:** about 308 KB on disk (104 KB packed), small enough to bundle into your own tools.
 - 🚀 **Fast:** install speed on par with package managers written in Rust.
 - 🧩 **Programmable:** every command is also a JavaScript function you can import.
 - 🎯 **Simple:** no new config files or conventions. Your existing `.npmrc` just works.
@@ -28,7 +28,7 @@ There are already several popular package managers:
 Furthermore:
 
 - 🟢 **Node.js is capable.** It already has worker threads, zlib, fetch and every other needed feature.
-- 🦀 Native package managers are much larger to download and store on disk, for every version. In CI, just fetching the binary, even from a cache, can cost more time than it could save! Most of the bytes in these binaries are already native features that Node.js already has. In our benchmarks, pnpm 12 takes 60 MB and aube 44 MB on disk; upm ~306 KB.
+- 🦀 Native package managers are much larger to download and store on disk, for every version. In CI, just fetching the binary, even from a cache, can cost more time than it could save! Most of the bytes in these binaries are already native features that Node.js already has. In our benchmarks, pnpm 12 takes 60 MB and aube 44 MB on disk; upm ~308 KB.
 - 🔌 **Programmatic API.** The only possible way to install dependencies is spawing command in a separate process. None of the current package managers are small enough to bundle and embed into another library.
 
 💡 upm started as an experiment: how fast and small can an npm client be in pure TypeScript,
