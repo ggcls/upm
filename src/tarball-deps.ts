@@ -10,7 +10,7 @@ import type { ResolveOptions } from "./resolve.ts";
 import { parse } from "./semver.ts";
 import { tarballSource } from "./spec.ts";
 import { sameStamp, stampOf } from "./state.ts";
-import type { Stamp } from "./state.ts";
+import type { Stamp, TarballStamp } from "./state.ts";
 import type { PackageIndex, Store, Tarball } from "./store.ts";
 import type { Manifest } from "./types.ts";
 import { describe } from "./util.ts";
@@ -62,34 +62,45 @@ export async function readTarball(
 
 /**
  * The lockfile's local tarballs (`sources`, key -> source) whose file is no longer the bytes it
- * pinned. One with the stamp the last install recorded is taken as the same; any other is read
- * with `read`, once for the command, so a resolve that follows finds it read. One that is gone
- * is left to the store: the lockfile still says what it held. `stamped` learns each stamp taken
- * here that a later check can trust.
+ * pinned. One with the stamp the last install recorded, checked then against the integrity the
+ * lockfile pins now, is taken as the same; any other is read with `read`, once for the command,
+ * so a resolve that follows finds it read. One that is gone is left to the store: the lockfile
+ * still says what it held. `stamped` learns each stamp taken here that a later check can trust.
  */
 export async function movedTarballs(
   dir: string,
   lock: Lockfile,
   sources: Map<string, string>,
   read: Read,
-  recorded: Record<string, Stamp | null>,
-  stamped: Map<string, Stamp>,
+  recorded: Record<string, TarballStamp | null>,
+  stamped: Map<string, TarballStamp>,
   log: (message: string) => void,
 ): Promise<string[]> {
   const moved: string[] = [];
   const checks = [...sources].map(async ([key, source]) => {
     const stamp = stampOf(builtin.path.resolve(dir, source.slice("file:".length)));
     if (!stamp) return;
-    if (sameStamp(stamp, recorded[source] ?? undefined)) {
-      stamped.set(source, stamp);
+    const { integrity } = lock.packages[key]!;
+    if (sameTarball(stamp, recorded[source], integrity)) {
+      stamped.set(source, [...stamp, integrity]);
       return;
     }
-    if ((await read(source)).dist.integrity === lock.packages[key]!.integrity) return;
+    if ((await read(source)).dist.integrity === integrity) return;
     log(`${source} changed since ${LOCKFILE} locked it`);
     moved.push(key);
   });
   await Promise.all(checks);
   return moved.sort();
+}
+
+/** Whether a local tarball still has `recorded`'s stamp, taken when its bytes were `integrity`. */
+function sameTarball(
+  stamp: Stamp | undefined,
+  recorded: TarballStamp | null | undefined,
+  integrity: string | undefined,
+): boolean {
+  if (recorded?.[4] === undefined || recorded[4] !== integrity) return false;
+  return sameStamp(stamp, recorded.slice(0, 4) as Stamp);
 }
 
 /**

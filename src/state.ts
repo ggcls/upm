@@ -57,12 +57,12 @@ export interface InstallState {
   stamps?: { lock: Stamp; manifest: Stamp; settings: string };
   /**
    * Every local tarball the lockfile names, by source, with the stamp it had just before an
-   * install checked it against the lockfile or read it into one, or null when none did. A local
-   * tarball is read like package.json: the lockfile holds while each is the file it was, and one
-   * with another stamp is checked again before the lockfile is trusted. Absent from a state an
-   * older upm wrote, which is then no proof of anything.
+   * install checked it against the lockfile or read it into one, and the integrity both agreed
+   * on, or null when none did. A local tarball is read like package.json: the lockfile holds
+   * while each is the file it was, and one with another stamp or integrity is checked again
+   * before the lockfile is trusted. Absent from a state an older upm wrote: no proof of anything.
    */
-  tarballs?: Record<string, Stamp | null>;
+  tarballs?: Record<string, TarballStamp | null>;
 }
 
 /** A top's direct links (name -> target) and the bin names it places. */
@@ -83,6 +83,9 @@ export function stampOf(path: string): Stamp | undefined {
     return undefined;
   }
 }
+
+/** A local tarball's stamp, then its bytes' integrity: an older upm wrote none. */
+export type TarballStamp = [...Stamp, integrity?: string];
 
 export function sameStamp(a: Stamp | undefined, b: Stamp | undefined): boolean {
   return a !== undefined && b !== undefined && a.every((part, i) => part === b[i]);
@@ -260,7 +263,7 @@ function isState(value: unknown): value is InstallState {
             typeof state.stamps.settings === "string")))) &&
     (state.tarballs === undefined ||
       (isRecord(state.tarballs) &&
-        Object.values(state.tarballs).every((stamp) => stamp === null || isStamp(stamp))))
+        Object.values(state.tarballs).every((stamp) => stamp === null || isTarballStamp(stamp))))
     // `workspaces` is checked by its one reader, `listWorkspaces`: nothing else loads it.
   );
 }
@@ -281,6 +284,15 @@ function isTop(value: unknown): value is TopLinks {
 
 export function isStamp(value: unknown): value is Stamp {
   return Array.isArray(value) && value.length === 4 && value.every((p) => typeof p === "string");
+}
+
+function isTarballStamp(value: unknown): value is TarballStamp {
+  return (
+    Array.isArray(value) &&
+    value.length < 6 &&
+    isStamp(value.slice(0, 4)) &&
+    isStamp(value.slice(-4))
+  );
 }
 
 function fail(message: string): Error {

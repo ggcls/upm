@@ -61,7 +61,9 @@ it pinned, so an install checks each (its stamp, then its hash when the stamp mo
 whose bytes moved anew and keeps the rest of the tree, and a frozen install calls the lockfile
 stale. The state records each tarball's stamp from just before its bytes were checked or read,
 never after, so a write that lands during an install shows as another stamp next time; the
-no-op check trusts nothing it has no stamp for.
+no-op check trusts nothing it has no stamp for. A stamp proves the file unchanged, not which
+bytes the lockfile names, so it is kept with the integrity it was checked against and trusted
+only while the lockfile pins that one; any other is hashed, since the store may hold its bytes.
 
 A url has no name to hold its bytes to, and the store is keyed by integrity alone, so an index
 lists the urls its tarball was fetched from, and a url's entry is filled and linked only from

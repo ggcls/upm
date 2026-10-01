@@ -1221,11 +1221,12 @@ describe("startup budget", () => {
     // no-op install too. 159,228 with a name a disk folds onto a later one checked as that one,
     // after a failed size check only. 160,062 with a url tarball's bytes taken only from an index
     // that lists the url, `--help` within noise (28.6/28.4 and 35.8/36.5 ms), a warm and a no-op
-    // install too.
+    // install too. 160,231 with each local tarball's stamp kept with its integrity, `--help`
+    // within noise (66/63 and 138/135 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(160_070);
+    expect(bytes).toBeLessThanOrEqual(160_240);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [

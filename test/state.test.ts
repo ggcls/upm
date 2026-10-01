@@ -187,11 +187,14 @@ describe("readState", () => {
 
   it("reads the local tarballs' stamps, and refuses any that is not one", async () => {
     const state = { version: 1, hash: "a", entries: [], complete: true, store: STORE };
-    const stamp = ["1", "2", "3", "4"];
-    const tarballs = { "file:a.tgz": stamp, "file:b.tgz": null };
+    const stamp = ["1", "2", "3", "4", "sha512-a"];
+    // An older upm's stamp has no integrity: read, and trusted for none.
+    const tarballs = { "file:a.tgz": stamp, "file:b.tgz": null, "file:c.tgz": stamp.slice(0, 4) };
     await put(JSON.stringify({ ...state, tarballs }));
     expect(await readState(project)).toEqual({ ...state, tarballs });
-    for (const bad of [[], { "file:a.tgz": ["1", "2"] }, { "file:a.tgz": "x" }]) {
+    const bads: unknown[] = [[], { "file:a.tgz": ["1", "2"] }, { "file:a.tgz": "x" }];
+    bads.push({ "file:a.tgz": [...stamp.slice(0, 4), 5] }, { "file:a.tgz": [...stamp, "x"] });
+    for (const bad of bads) {
       await put(JSON.stringify({ ...state, tarballs: bad }));
       expect(await readState(project), JSON.stringify(bad)).toBeUndefined();
     }

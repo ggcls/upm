@@ -1344,12 +1344,19 @@ describe("tarball dependencies", () => {
       { path: "index.js", data: 'module.exports = "local two";\n' },
     ]);
     const state = async () => await readJson(join(dir, "node_modules", ".upm.json"));
+    const checked = (bytes = local) => ({ [source]: [...stampOf(file())!, hashOf(bytes)] });
+    /** How often the install read the tarball's bytes. */
+    const reads = () => {
+      const fsp = process.getBuiltinModule("node:fs/promises");
+      const spy = vi.spyOn(fsp, "readFile");
+      return () => spy.mock.calls.filter(([path]) => path === file()).length;
+    };
 
     beforeEach(async () => {
       const dependencies = { local: source, remote: url() };
       await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies }));
       await upm.install(base);
-      expect((await state()).tarballs).toEqual({ [source]: stampOf(file()) });
+      expect((await state()).tarballs).toEqual(checked());
     });
 
     it("is read again and locked anew, and nothing else is", async () => {
@@ -1366,7 +1373,7 @@ describe("tarball dependencies", () => {
       const at = join(dir, "node_modules", "local", "index.js");
       expect(await readFile(at, "utf8")).toContain("local two");
       // Stamped as it was read, so the next install is a no-op.
-      expect((await state()).tarballs).toEqual({ [source]: stampOf(file()) });
+      expect((await state()).tarballs).toEqual(checked(next));
       expect((await upm.install(base)).upToDate).toBe(true);
     });
 
@@ -1384,7 +1391,61 @@ describe("tarball dependencies", () => {
       await utimes(file(), later, later);
       expect((await upm.install(base)).upToDate).toBe(true);
       expect(await readFile(join(dir, "upm.lock"), "utf8")).toBe(lock);
-      expect((await state()).tarballs).toEqual({ [source]: stampOf(file()) });
+      expect((await state()).tarballs).toEqual(checked());
+    });
+
+    it("is not read again while its stamp and the lockfile's integrity hold", async () => {
+      const read = reads();
+      expect((await upm.install(base)).upToDate).toBe(true);
+      // The lockfile in other words: the install checks it, but not the tarball's bytes.
+      const lock = await readJson(join(dir, "upm.lock"));
+      await writeFile(join(dir, "upm.lock"), JSON.stringify(lock));
+      expect((await upm.install(base)).upToDate).toBe(true);
+      expect(read()).toBe(0);
+    });
+
+    it("is read again when the lockfile pins it to other bytes the store holds", async () => {
+      // Another project put a tarball of the same name and version in the store.
+      const evil = makeTarball([
+        { path: "package.json", data: '{"name":"local","version":"2.0.0"}' },
+        { path: "index.js", data: 'module.exports = "evil";\n' },
+      ]);
+      const other = join(dir, "other");
+      await mkdir(other);
+      await writeFile(join(other, "evil.tgz"), evil);
+      const manifest = { dependencies: { local: "file:evil.tgz" } };
+      await writeFile(join(other, "package.json"), JSON.stringify(manifest));
+      await upm.install({ ...base, dir: other });
+
+      // Its stamp unmoved, the file is no proof of bytes the lockfile now names.
+      const path = join(dir, "upm.lock");
+      const lock = await readJson(path);
+      lock.packages[`local@${source}`].integrity = hashOf(evil);
+      await writeFile(path, JSON.stringify(lock));
+      await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({
+        code: "ELOCK",
+        message: expect.stringMatching(/is out of date: file:vendor\/local-2\.0\.0\.tgz changed/),
+      });
+      lines.length = 0;
+      // Locked anew from the file, which is the tree already there.
+      expect(await upm.install(base)).toMatchObject({ upToDate: true });
+      expect(lines).toContain(`${source} changed since upm.lock locked it`);
+      const at = join(dir, "node_modules", "local", "index.js");
+      expect(await readFile(at, "utf8")).toContain('"local"');
+      expect((await readJson(path)).packages[`local@${source}`].integrity).toBe(hashOf(local));
+      expect((await state()).tarballs).toEqual(checked());
+    });
+
+    it("is read once more when an older upm stamped it without its integrity", async () => {
+      const at = join(dir, "node_modules", ".upm.json");
+      const old = await state();
+      await writeFile(at, JSON.stringify({ ...old, tarballs: { [source]: stampOf(file()) } }));
+      const read = reads();
+      expect((await upm.install(base)).upToDate).toBe(true);
+      expect(read()).toBe(1);
+      expect((await state()).tarballs).toEqual(checked());
+      expect((await upm.install(base)).upToDate).toBe(true);
+      expect(read()).toBe(1);
     });
 
     it("makes the lockfile stale for lock too", async () => {
@@ -1454,7 +1515,8 @@ describe("tarball dependencies", () => {
     // Stamped though a tree with workspaces has no no-op check: the next install hashes nothing.
     const state = await readJson(join(dir, "node_modules", ".upm.json"));
     const file = join(dir, "vendor", "local-2.0.0.tgz");
-    expect(state.tarballs).toEqual({ "file:vendor/local-2.0.0.tgz": stampOf(file) });
+    const stamp = [...stampOf(file)!, hashOf(local)];
+    expect(state.tarballs).toEqual({ "file:vendor/local-2.0.0.tgz": stamp });
   });
 
   it("reads a hand-written package.json as npm does", async () => {

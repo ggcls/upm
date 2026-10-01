@@ -73,7 +73,7 @@ import {
   writeState,
   writeTreeLock,
 } from "./state.ts";
-import type { InstallState, Inputs, Stamp } from "./state.ts";
+import type { InstallState, Inputs, Stamp, TarballStamp } from "./state.ts";
 import { createStore, storeDir } from "./store.ts";
 import type { Store, Tarball } from "./store.ts";
 import type { StoreBackend } from "./store-backend.ts";
@@ -448,7 +448,7 @@ interface Context {
   /** Each tarball dependency's package.json by source, read once however often it is asked. */
   tarballs?: Map<string, Promise<Manifest>>;
   /** Each local tarball's stamp from just before this command checked or read its bytes. */
-  stamped?: Map<string, Stamp>;
+  stamped?: Map<string, TarballStamp>;
   /** Told by any pool that no thread of its would start; said once per command. */
   noThreads: () => void;
   /** The resolve's registry, opened before the workspaces are read (`openEarly`). */
@@ -890,18 +890,23 @@ function holds(dir: string, manifest: RootManifest): boolean {
 }
 
 /** Each of the lockfile's local tarballs with the stamp this command took before it checked it. */
-function filesOf(ctx: Context, lock: Lockfile): Record<string, Stamp | null> {
-  const files: Record<string, Stamp | null> = {};
-  for (const source of localSources(lock).values())
-    files[source] = ctx.stamped?.get(source) ?? null;
+function filesOf(ctx: Context, lock: Lockfile): Record<string, TarballStamp | null> {
+  const files: Record<string, TarballStamp | null> = {};
+  for (const [key, source] of localSources(lock)) {
+    const stamp = ctx.stamped?.get(source);
+    files[source] = stamp && stamp[4] === lock.packages[key]!.integrity ? stamp : null;
+  }
   return files;
 }
 
 /** Whether every local tarball has the stamp it had when an install last checked it. */
-function sameFiles(dir: string, files: Record<string, Stamp | null>): boolean {
+function sameFiles(dir: string, files: Record<string, TarballStamp | null>): boolean {
   for (const [source, stamp] of Object.entries(files)) {
     const at = builtin.path.resolve(dir, source.slice("file:".length));
-    if (!stamp || !sameStamp(stampOf(at), stamp)) return false;
+    // The same lockfile, so the integrity it was checked against then. An older upm's has none.
+    if (stamp?.[4] === undefined || !sameStamp(stampOf(at), stamp.slice(0, 4) as Stamp)) {
+      return false;
+    }
   }
   return true;
 }
@@ -923,7 +928,7 @@ async function movedIn(
   dir: string,
   lock: Lockfile,
   read: ResolveOptions["tarball"],
-  recorded: Record<string, Stamp | null> = {},
+  recorded: Record<string, TarballStamp | null> = {},
 ): Promise<string[]> {
   const sources = localSources(lock);
   if (sources.size === 0 || !read) return [];
@@ -1505,7 +1510,7 @@ async function plan(
   project: Project,
   walk: Walk,
   opened?: OpenRegistry,
-  recorded?: Record<string, Stamp | null>,
+  recorded?: Record<string, TarballStamp | null>,
 ): Promise<Lockfile> {
   const { dir, manifest, workspaces } = project;
   const { frozen } = ctx.options;
@@ -2089,7 +2094,8 @@ function tarballReader(
       hit = import("./tarball-deps.ts").then((m) => m.readTarball(store, at, source, pinned));
       if (stamp)
         hit.then(
-          () => (ctx.stamped ??= new Map()).set(source, stamp),
+          (read: Manifest) =>
+            (ctx.stamped ??= new Map()).set(source, [...stamp, read.dist.integrity]),
           () => {},
         );
       reads.set(source, hit);

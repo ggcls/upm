@@ -65,13 +65,6 @@ compatibility. Keep this page about open work, not completed implementation step
   Checking a url on every install would cost a request and fail offline; the fix is an explicit
   `upm update <name>` that unlocks a name's entries and resolves them again, which registry
   packages want too. Start at `keep` in `src/api.ts`.
-- **A local tarball's integrity is the lockfile's word while its stamp holds:** a `file:`
-  tarball with the stamp the state recorded is taken as the bytes the lockfile pins
-  (`movedTarballs` in `src/tarball-deps.ts`), but the state does not say which integrity it
-  was checked against. So a `upm.lock` edited in an installed checkout to give it another
-  stored tarball's integrity links those bytes under its name; a fresh tree reads the file
-  and calls the lockfile stale. A fix records the integrity beside each stamp (`filesOf` in
-  `src/api.ts`) and trusts the stamp only while the lockfile still pins it.
 - **CRLF `#!` line:** npm and pnpm strip a `\r` from a bin's `#!` line on Linux and macOS,
   so a bin published from Windows still runs; here `env` looks for `node\r` and fails. The
   fix belongs in the unpack, before the file's hash, for declared bins only; a big file the
