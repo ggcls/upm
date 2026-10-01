@@ -4,7 +4,16 @@
 // outside the installed package. On other platforms they pin what upm keeps and drops.
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  link,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -199,6 +208,11 @@ async function probe(entries: Case["entries"]) {
       (result) => ({ upToDate: result.upToDate, repaired: result.stats.repaired }),
       (error: NodeJS.ErrnoException) => ({ code: error.code }),
     );
+    // A name the disk folds onto another must not read as damage on every check.
+    fact["verifyAgain"] = await upm.install({ ...base, verify: true }).then(
+      (result) => ({ repaired: result.stats.repaired }),
+      (error: NodeJS.ErrnoException) => ({ code: error.code }),
+    );
     fact["afterVerify"] = await upm.install(base).then(
       (result) => ({ upToDate: result.upToDate }),
       (error: NodeJS.ErrnoException) => ({ code: error.code }),
@@ -220,6 +234,10 @@ describe.runIf(windows)("tar entry names on windows", () => {
       print({ case: name, ...fact, outside, strays: found });
       expect(found).toEqual([]);
       expect(outside).toEqual([]);
+      if ((fact["install"] as { ok: boolean }).ok) {
+        expect(fact["verify"]).toMatchObject({ repaired: 0 });
+        expect(fact["verifyAgain"]).toEqual({ repaired: 0 });
+      }
     });
   }
 
@@ -228,6 +246,8 @@ describe.runIf(windows)("tar entry names on windows", () => {
     print({ case: "all", ...fact, outside, strays: found });
     expect(found).toEqual([]);
     expect(outside).toEqual([]);
+    expect(fact["verify"]).toMatchObject({ repaired: 0 });
+    expect(fact["verifyAgain"]).toEqual({ repaired: 0 });
   });
 });
 
@@ -255,7 +275,71 @@ describe.skipIf(windows)("tar entry names elsewhere", () => {
     if (process.platform === "linux")
       expect(files).toEqual(expect.arrayContaining(["A.js", "a.js"]));
     expect(fact["repeat"]).toEqual({ upToDate: true });
-    expect(fact["verify"]).toMatchObject({ upToDate: false });
+    expect(fact["verify"]).toEqual({ upToDate: false, repaired: 0 });
+    expect(fact["verifyAgain"]).toEqual({ repaired: 0 });
     expect(fact["afterVerify"]).toEqual({ upToDate: true });
+  });
+});
+
+// Linux keeps both names, so a case-insensitive disk is played by giving `A.js` the very file
+// `a.js` is, as such a disk does once the linker has placed the later name.
+describe.runIf(process.platform === "linux")("names a disk folds, checked by --verify", () => {
+  async function fold(entries: Case["entries"], keep: string, drop: string): Promise<string> {
+    tarball = pack(entries);
+    await upm.install(base);
+    const pkg = await realpath(join(dir, "node_modules", "probe"));
+    await unlink(join(pkg, drop));
+    await link(join(pkg, keep), join(pkg, drop));
+    return pkg;
+  }
+
+  async function repairs(): Promise<number> {
+    return (await upm.install({ ...base, verify: true })).stats.repaired;
+  }
+
+  for (const [name, lower] of [
+    ["the same size", "lower"],
+    ["a different size", "lowercase"],
+  ]) {
+    it(`takes the later name's file for both, at ${name}`, async () => {
+      const entries = [
+        { path: "A.js", data: "upper" },
+        { path: "a.js", data: lower! },
+      ];
+      const pkg = await fold(entries, "a.js", "A.js");
+      expect(await repairs()).toBe(0);
+      expect(await repairs()).toBe(0);
+      // A plain install with no state checks every entry's sizes too.
+      await rm(join(dir, "node_modules", ".upm.json"));
+      expect((await upm.install(base)).stats.repaired).toBe(0);
+      // Not rebuilt: a rebuild here would give each name its own file again.
+      expect(await readFile(join(pkg, "A.js"), "utf8")).toBe(lower);
+    });
+  }
+
+  it("repairs the earlier name's file kept for both", async () => {
+    const pkg = await fold(
+      [
+        { path: "A.js", data: "upper" },
+        { path: "a.js", data: "lower" },
+      ],
+      "A.js",
+      "a.js",
+    );
+    expect(await repairs()).toBe(1);
+    expect(await readFile(join(pkg, "a.js"), "utf8")).toBe("lower");
+  });
+
+  it("repairs a folded name that is a file of its own", async () => {
+    tarball = pack([
+      { path: "A.js", data: "upper" },
+      { path: "a.js", data: "lower" },
+    ]);
+    await upm.install(base);
+    const pkg = await realpath(join(dir, "node_modules", "probe"));
+    await unlink(join(pkg, "A.js"));
+    await writeFile(join(pkg, "A.js"), "lower");
+    expect(await repairs()).toBe(1);
+    expect(await readFile(join(pkg, "A.js"), "utf8")).toBe("upper");
   });
 });

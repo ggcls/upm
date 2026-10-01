@@ -69,16 +69,67 @@ export function sound(names: Names, files: FileEntry[], at: string, rehash?: boo
  */
 export function placed(names: Names, files: FileEntry[], pkgDir: string): boolean {
   const { fs, path } = builtin;
+  const later = foldsOf(files);
   try {
     for (const file of files) {
       const at = path.join(pkgDir, file.path);
       const mine = fs.statSync(at);
       const its = fs.statSync(names.blobPath(file), { throwIfNoEntry: false });
       if (mine.ino === its?.ino && mine.dev === its.dev) continue;
+      if (shadowed(later, file, pkgDir, mine)) continue;
       if (!holds(names, file, at)) return false;
     }
     return true;
   } catch {
     return false;
   }
+}
+
+/** Every file at its index size, but for one a later file's name hides, as in `placed`. */
+export function sized(files: FileEntry[], pkgDir: string): boolean {
+  const { fs, path } = builtin;
+  const later = foldsOf(files);
+  try {
+    for (const file of files) {
+      const mine = fs.statSync(path.join(pkgDir, file.path), { throwIfNoEntry: false });
+      if (mine?.size !== file.size && !(mine && shadowed(later, file, pkgDir, mine))) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Folded name -> the last file under it, for names two or more files share. A case-insensitive
+ * disk keeps one file for `A.js` and `a.js`, and the linker makes it the later one's. A fold
+ * wider than the disk's only asks it more: `shadowed` lets the disk decide.
+ */
+function foldsOf(files: FileEntry[]): Map<string, FileEntry> {
+  const seen = new Set<string>();
+  const last = new Map<string, FileEntry>();
+  for (const file of files) {
+    const key = fold(file.path);
+    if (seen.has(key)) last.set(key, file);
+    else seen.add(key);
+  }
+  return last;
+}
+
+function fold(name: string): string {
+  return name.normalize("NFC").toUpperCase().toLowerCase();
+}
+
+/** Whether `file`'s name, stat'd as `mine`, opens the file of the later one it folds to. */
+function shadowed(
+  later: Map<string, FileEntry>,
+  file: FileEntry,
+  pkgDir: string,
+  mine: { ino: number; dev: number },
+): boolean {
+  const winner = later.size > 0 ? later.get(fold(file.path)) : undefined;
+  if (!winner || winner === file) return false;
+  const { fs, path } = builtin;
+  const its = fs.statSync(path.join(pkgDir, winner.path), { throwIfNoEntry: false });
+  return mine.ino === its?.ino && mine.dev === its.dev;
 }

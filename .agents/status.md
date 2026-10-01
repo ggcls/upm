@@ -39,8 +39,11 @@ compatibility. Keep this page about open work, not completed implementation step
   Read-only is a file attribute there, shared by every hardlink: repairing a damaged blob
   leaves the old copy writable in projects still linked to it.
   Two files a case-insensitive disk folds to one name (`A.js`, `a.js`) link the later, as npm's
-  tar does, but when their sizes differ the entry fails the size check of every full link and is
-  built again.
+  tar does, and the entry checks take that file for both (`shadowed` in `src/verify.ts`). A
+  package linked on several workers is split by exact directory, so files under `Lib/` and `lib/`
+  can land in either order; when the earlier wins, every `--verify` builds it again, and every
+  full link too when the sizes differ. On a disk that keeps both names, those checks also pass
+  an `A.js` made a link to `a.js`, which only an edit by hand does.
   Reserved Windows names (`con`, `aux.js`) and names ending in a dot or space are not handled.
   Start at `place` in `src/link.ts`.
   A portable lockfile is not proof of a portable installer. Add real install/run checks,

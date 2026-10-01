@@ -536,7 +536,11 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
     const final = join(storeDir, entry.key);
     if (present.has(entry.key)) {
       const deps = depsOf(entry.pkg);
-      const files = await sized(entry, (file) => join(storeDir, entry.home, file.path));
+      const home = realDir(entry);
+      const files =
+        (await sized(entry, (file) => join(home, file.path))) ||
+        // A case-insensitive disk keeps one file for `A.js` and `a.js`.
+        (await import("./verify.ts")).sized(entry.index.files, home);
       // Short here and hardlinked, it is short in the store too: power lost before the disk had
       // the bytes. ELINK has the install refill the store with sizes checked, then link again.
       if (!files && !(await sized(entry, store.blobPath))) {
