@@ -166,7 +166,9 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         // Then upm installs it, which finds the registry's answers in the HTTP cache.
         // Not for a run already replaced: in dev, StrictMode starts each run twice.
         resolved.then(
-          (done) => run.current === id && install(id, query.dependencies, registry, done.lockfile),
+          (done) =>
+            run.current === id &&
+            install(id, query.dependencies, registry, next.fetch, done.lockfile),
           () => {},
         );
       };
@@ -190,13 +192,14 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
     id: number,
     dependencies: Record<string, string>,
     registry: string,
+    logged: typeof fetch,
     lockfile?: string,
   ) {
     const warnings: string[] = [];
     const update = (part: Partial<View>) =>
       run.current === id && setView((view) => view && { ...view, ...part });
     update({ installed: true, installStarted: performance.now(), installWarnings: warnings });
-    // Its requests are upm's own, not this client's: redraw on a clock while it runs.
+    // Its progress is upm's own, not this client's: redraw on a clock while it runs.
     const clock = setInterval(redraw, 100);
     installInTab(
       dependencies,
@@ -205,6 +208,7 @@ export function App({ ready }: { ready?: Promise<unknown> }) {
         if (level === "warn") warnings.push(message);
       },
       lockfile,
+      logged,
     )
       .then(
         (installed) => {

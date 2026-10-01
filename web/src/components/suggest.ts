@@ -11,6 +11,9 @@ const SEARCH = `${REGISTRY}/-/v1/search?size=20&text=`;
 // The resolver's own `accept` (src/registry.ts), so its request finds this one in the HTTP cache.
 const CORGI = "application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*";
 const SHOWN = 8;
+// The page's own, taken at load: an install swaps the global one to list upm's requests
+// (src/lib/install.ts), and these are not upm's.
+const pageFetch = globalThis.fetch;
 
 interface Hit {
   /** What the box takes when picked. */
@@ -48,7 +51,7 @@ const asked = new Map<string, Promise<void>>();
 function ask<T>(key: string, url: string, init: RequestInit, done: (body: T) => void) {
   let pending = asked.get(key);
   if (!pending) {
-    pending = fetch(url, init)
+    pending = pageFetch(url, init)
       .then((res) => (res.ok ? (res.json() as Promise<T>) : Promise.reject()))
       .then(done, () => void asked.delete(key));
     asked.set(key, pending);

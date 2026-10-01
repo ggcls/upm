@@ -113,13 +113,14 @@ export function installProgress(): number | undefined {
 /**
  * Install `dependencies` into a fresh `/project`. One run at a time: they share the filesystem.
  * With the walk's `lockfile` as its `upm.lock`, upm installs what the walk picked, resolving
- * nothing again.
+ * nothing again. Its registry requests go through `logged`, when given.
  */
 export function installInTab(
   dependencies: Record<string, string>,
   registry: string,
   log: (message: string, level: string) => void,
   lockfile?: string,
+  logged?: typeof fetch,
 ): Promise<Installed> {
   const run = running.then(async () => {
     const node = await ready();
@@ -138,14 +139,30 @@ export function installInTab(
     const quiet = (message: string, level: string) => {
       if (!message.startsWith("worker threads unavailable")) log(message, level);
     };
-    const result = await install({
-      dir: PROJECT,
-      registry,
-      minReleaseAge: 0,
-      storeBackend,
-      log: quiet,
-      onProgress: (progress) => void (seen[progress.phase] = progress),
-    });
+    // upm takes no `fetch`: it calls the global one, so that is swapped for the run. Its registry
+    // threads have their own, but with the walk's lockfile they never start. One run at a time,
+    // so no other install swaps it meanwhile.
+    const page = globalThis.fetch;
+    const origin = new URL(registry).origin;
+    if (logged) {
+      globalThis.fetch = (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        return (new URL(url, location.href).origin === origin ? logged : page)(input, init);
+      };
+    }
+    let result: InstallResult;
+    try {
+      result = await install({
+        dir: PROJECT,
+        registry,
+        minReleaseAge: 0,
+        storeBackend,
+        log: quiet,
+        onProgress: (progress) => void (seen[progress.phase] = progress),
+      });
+    } finally {
+      globalThis.fetch = page;
+    }
     const ms = performance.now() - start;
     // The store now holds something worth keeping.
     if (storeBackend?.set) persist();

@@ -18,6 +18,10 @@ import { cachedFetch } from "./opfs.ts";
 
 export const DEFAULT_REGISTRY = "https://registry.npmjs.org";
 
+// The page's own, taken at load: while an install runs, the global one leads back to a client's
+// `fetch` (./install.ts).
+const pageFetch = globalThis.fetch;
+
 export interface RequestEntry {
   id: number;
   url: string;
@@ -95,6 +99,8 @@ export interface Size {
 export interface Client {
   registry: Registry;
   requests: RequestEntry[];
+  /** `fetch` whose every request lands in `requests`. */
+  fetch: typeof fetch;
   /** `after`: when to start; the parts stay pending until then. */
   run(spec: string, after?: Promise<unknown>): Run;
 }
@@ -121,7 +127,7 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
     onChange();
     let response: Response;
     try {
-      response = await fetch(input, init);
+      response = await pageFetch(input, init);
     } catch (error) {
       entry.done = true;
       entry.ms = entry.end = performance.now() - start;
@@ -174,6 +180,7 @@ export function createClient(registryUrl: string, onChange: () => void): Client 
   return {
     registry,
     requests,
+    fetch: logged,
 
     run(raw, after) {
       const spec = parseSpec(raw.trim());

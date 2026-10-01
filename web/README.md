@@ -52,7 +52,8 @@ Once that resolve is in, upm's own `install` runs in the tab: `src/lib/node.ts` 
 `worker_threads` every pool runs on the one thread. The Explorer then shows the project
 (`node_modules/.upm`, the links, `upm.lock`) and the content store. The platform is Linux wasm32
 with glibc, so of the optional platform builds the tab gets the wasm ones, the only ones a
-browser can run.
+browser can run. upm calls the global `fetch`, so while it runs, the tab swaps in one that sends
+the registry's requests (the install's downloads) through the Requests panel too.
 
 The `fs` lives in memory, since upm's sync calls cannot wait for OPFS, and the project is made
 fresh for each run. What outlives the tab is the store's content: `src/lib/opfs.ts` keeps it on
