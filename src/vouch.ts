@@ -85,7 +85,9 @@ function manifestOf(index: PackageIndex, store: Reader): Record<(typeof GROUPS)[
   const file = index.files.find((entry) => entry.path === "package.json");
   let json: Record<string, unknown> | undefined;
   try {
-    json = file && JSON.parse(builtin.fs.readFileSync(store.blobPath(file), "utf8"));
+    json =
+      file &&
+      JSON.parse(builtin.fs.readFileSync(store.blobPath(file), "utf8").replace(/^\uFEFF/, ""));
   } catch {}
   const out = {} as Record<(typeof GROUPS)[number], object>;
   for (const group of GROUPS) {

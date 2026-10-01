@@ -173,6 +173,11 @@ the index would make an index over lost bytes more likely, not less. Power loss 
 an index over short blobs. Linking heals that: an entry whose files are short, over blobs
 that are short too, throws ELINK, and the install refills the store with sizes checked.
 
+An index's mtime is evidence too: `--verify` hashes only the blobs newer than it (`sound` in
+`src/verify.ts`). So an index written again over the same tarball — one from before it kept
+aliases, written back once a link has read them (`src/index-upgrade.ts`) — keeps its old mtime,
+and is renamed in whole, so a concurrent reader sees either the old one or the new.
+
 A dropped optional is the one kind of short tree that state may certify, and it names what
 is `missing`. That applies only when asking again would not help: the tarball is gone (404),
 its bytes are not the pinned ones or not a tarball, it is another package's, or it failed

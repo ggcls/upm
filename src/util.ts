@@ -103,20 +103,29 @@ export function misdeclared(
 
 /**
  * `aliasesOf` an entry's package.json: kept in its index, else — an index from before they
- * were kept — read from the stored file. One that cannot be read declares nothing.
+ * were kept — read from the stored file, set on the index and the index added to `read`, for
+ * `keepAliases` to write. One that cannot be read declares nothing, and sets nothing.
  */
 export function declaredIn(
   index: PackageIndex,
   blobPath: (file: FileEntry) => string,
+  read?: PackageIndex[],
 ): Record<string, string> {
   if (index.aliases) return index.aliases;
   const file = index.files.find((entry) => entry.path === "package.json");
-  if (!file) return {};
+  let text = "";
   try {
-    return aliasesOf(JSON.parse(builtin.fs.readFileSync(blobPath(file), "utf8")));
+    if (file) text = builtin.fs.readFileSync(blobPath(file), "utf8");
   } catch {
     return {};
   }
+  let aliases = {};
+  try {
+    // Without a BOM, as the unpack's decoder reads it.
+    aliases = aliasesOf(JSON.parse(text.replace(/^\uFEFF/, "")));
+  } catch {}
+  read?.push(index);
+  return (index.aliases = aliases);
 }
 
 /** A map of names to names, as an index keeps its aliases. */

@@ -202,6 +202,34 @@ describe("linkTree", () => {
     expect(await read(join(dir, "A.js"))).toBe("second");
   });
 
+  it("keeps what an older index lacked on a link thread, once it read it", async () => {
+    const { runShard } = await import("../src/link-worker.ts");
+    const blobDir = join(root, "blobs");
+    const file = join(root, "index.json");
+    await mkdir(blobDir, { recursive: true });
+    await writeFile(join(blobDir, "pj"), JSON.stringify({ dependencies: { x: "npm:y@^1" } }));
+    const older = { integrity: "sha512-a", files: [{ path: "package.json", blob: "pj", size: 1 }] };
+    // In seconds, 0.7 ms past one: a time copied as a Date would round up to the next.
+    const then = Math.floor(Date.now() / 1000) - 60 + 0.0007;
+    const run = async (index: object, dir: string) => {
+      await writeFile(file, JSON.stringify(index));
+      await utimes(file, then, then);
+      await mkdir(join(root, dir));
+      const shard = { dirs: [], dir: join(root, dir), paths: [], blobDir, blobs: [], symlinks: [] };
+      return () => runShard({ ...shard, index: file, edges: { x: "y" } }, { copyOnly: false });
+    };
+    // A package.json it cannot read says nothing, and nothing is kept.
+    const gone = { ...older, files: [{ ...older.files[0], blob: "gone" }] };
+    expect(await run(gone, "one")).toThrow(/makes x x, not y/);
+    expect(JSON.parse(await read(file))).toEqual(gone);
+    (await run(older, "two"))();
+    expect(JSON.parse(await read(file))).toEqual({ ...older, aliases: { x: "y" } });
+    const { mtimeMs } = await stat(file);
+    expect(mtimeMs).toBeLessThanOrEqual(then * 1000);
+    expect(mtimeMs).toBeGreaterThan(then * 1000 - 1);
+    expect(await readdir(root)).not.toContainEqual(expect.stringMatching(/\.tmp$/));
+  });
+
   it("hardlinks from the store instead of copying", async () => {
     const { store, resolution, integrity } = await seed([
       { name: "a", files: { "index.js": "shared bytes" } },

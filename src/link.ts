@@ -301,6 +301,8 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
   const keys = await storeKeys(resolution.packages);
   trace("link:keys");
   const wanted = new Map<string, Entry>();
+  // Indexes from before they kept a package's aliases, which a link read off its package.json.
+  const aged: PackageIndex[] = [];
   // Decided once, on the first link() that proves the store and the project cannot share
   // inodes. Probing per file would cost more than the fallback it guards.
   let copyOnly = false;
@@ -385,7 +387,7 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
         // A tarball dependency's package.json says what it is; nothing else could.
         const wrong =
           (pkg.source === undefined ? mismatch(found, identityOf(pkg)) : undefined) ??
-          misdeclared(declaredIn(found, store.blobPath), edgesOf(pkg));
+          misdeclared(declaredIn(found, store.blobPath, aged), edgesOf(pkg));
         if (wrong) throw fail(`${id} cannot be installed: ${wrong}`, "EMISMATCH");
         held = found;
         return found;
@@ -525,6 +527,11 @@ export async function linkTree(resolution: Resolution, options: LinkOptions): Pr
     ),
   );
   trace("link:statewritten");
+  // Written back once, so the next link reads none of them. A link thread writes its own.
+  if (aged.length > 0) {
+    const { keepAliases } = await import("./index-upgrade.ts");
+    for (const index of aged) keepAliases(store.indexPath(index.integrity), index);
+  }
   return result;
 
   function realDir(entry: Entry): string {

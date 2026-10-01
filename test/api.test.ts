@@ -22,8 +22,9 @@ import { createServer } from "node:http";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { builtin } from "../src/builtin.ts";
 import * as upm from "../src/index.ts";
 import { parseLockfile } from "../src/resolver.ts";
 import { stampOf } from "../src/state.ts";
@@ -1888,6 +1889,37 @@ describe("a tarball is the package it is installed as", () => {
     await refused("EMISMATCH");
   });
 
+  it("keeps what an older index lacked, read once, at the index's own time", async () => {
+    publish("pkg-q", "1.0.0");
+    const p = publish("pkg-p", "1.0.0", undefined, { "q-cjs": "npm:pkg-q@^1" });
+    await locked({ "pkg-p": "^1" }, () => {});
+    const { createStore } = await import("../src/store.ts");
+    const store = createStore({ dir: base.store! });
+    const at = store.indexPath(p);
+    const fresh = await readFile(at, "utf8");
+    const { aliases, ...older } = JSON.parse(fresh);
+    const blob = store.blobPath(older.files.find((file: any) => file.path === "package.json"));
+    const reads = () => spy.mock.calls.filter(([path]) => path === blob).length;
+    const spy = vi.spyOn(builtin.fs, "readFileSync");
+    for (const experimental of [base.experimental, pooled]) {
+      await writeFile(at, JSON.stringify(older));
+      const then = new Date(Date.now() - 60_000);
+      await utimes(at, then, then);
+      spy.mockClear();
+      await rm(join(dir, "node_modules"), { recursive: true });
+      await upm.install({ ...base, frozen: true, experimental });
+      // Read once, then kept as an index written now keeps it, and as old as it was.
+      expect(await readFile(at, "utf8")).toBe(fresh);
+      expect((await stat(at)).mtimeMs).toBe(then.getTime());
+      if (experimental === base.experimental) expect(reads()).toBe(1);
+      spy.mockClear();
+      await rm(join(dir, "node_modules"), { recursive: true });
+      await upm.install({ ...base, frozen: true, experimental });
+      expect(reads()).toBe(0);
+      expect(await readdir(dirname(at))).toEqual([basename(at)]);
+    }
+  });
+
   it("refuses a peer given another package, whatever the lock calls the edge", async () => {
     publish("host", "1.0.0");
     publish("pkg-q", "1.0.0");
@@ -2029,6 +2061,28 @@ describe("a tarball is the package it is installed as", () => {
         expect(await readFile(join(dirname(at), "host", "index.js"), "utf8")).toContain(host);
       }
     }
+  });
+
+  it("takes a peer that a package.json with a BOM declares", async () => {
+    publish("real-host", "1.0.0");
+    publish("plugin", "1.0.0", undefined, undefined, { host: "^1" });
+    publish("mid", "1.0.0", undefined, { host: "npm:real-host@^1", plugin: "^1" });
+    // The unpack reads a package.json without its BOM; so must the peer's check.
+    const json = { name: "plugin", version: "1.0.0", peerDependencies: { host: "^1" } };
+    const tgz = makeTarball([
+      { path: "package.json", data: `﻿${JSON.stringify(json)}` },
+      { path: "index.js", data: "module.exports = 'plugin';\n" },
+    ]);
+    files["/plugin/-/plugin-1.0.0.tgz"] = tgz;
+    (docs["/plugin"] as any).versions["1.0.0"].dist.integrity = hashOf(tgz);
+    await locked({ mid: "^1" }, () => {});
+    await rm(join(dir, "node_modules"), { recursive: true, force: true });
+    await upm.install({ ...base, frozen: true });
+    const mid = await realpath(join(dir, "node_modules", "mid"));
+    const plugin = await realpath(join(dirname(mid), "plugin"));
+    expect(await readFile(join(dirname(plugin), "host", "index.js"), "utf8")).toContain(
+      "real-host@1.0.0",
+    );
   });
 
   it("refuses a peer on an alias that only an edge no package.json declares put there", async () => {

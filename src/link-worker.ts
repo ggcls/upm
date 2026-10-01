@@ -3,6 +3,7 @@
 import { builtin } from "./builtin.ts";
 import type { Shard, ShardResult } from "./link.ts";
 import type { PackageIndex } from "./store.ts";
+import { keepAliases } from "./index-upgrade.ts";
 import { sameIntegrity } from "./integrity.ts";
 import { declaredIn, isIndex, linkArgs, misdeclared, mismatch } from "./util.ts";
 
@@ -127,15 +128,18 @@ function readIndex({ index: file, integrity, want, edges, blobDir }: Shard): Pac
     throw fail(`${file} is not the package index it should be`);
   }
   const { sep } = builtin.path;
+  const aged: PackageIndex[] = [];
   const wrong =
     (want && mismatch(parsed, want)) ||
     (edges &&
       misdeclared(
-        declaredIn(parsed, (at) => `${blobDir}${sep}${at.blob}`),
+        declaredIn(parsed, (at) => `${blobDir}${sep}${at.blob}`, aged),
         edges,
       ));
   const what = want ? `${want.name}@${want.version}` : file;
   if (wrong) throw fail(`${what} cannot be installed: ${wrong}`, "EMISMATCH");
+  // Here, on the thread that read it, which has nothing else to do meanwhile.
+  if (aged.length > 0) keepAliases(file!, parsed);
   return parsed;
 }
 
