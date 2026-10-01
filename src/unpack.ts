@@ -287,9 +287,12 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
     // The manifest may arrive last, after we hashed the bin's original bytes.
     for (const path of bins) {
       const file = found.get(path);
-      if (!file) continue;
-      const data = normalizeShebang(file.data);
-      if (data.length === file.data.length) continue;
+      const cr = file ? shebangCR(file.data) : -1;
+      if (!file || cr < 0) continue;
+      // A copy: tar entries can be views into the caller's plain archive.
+      const data = new Uint8Array(file.data.length - 1);
+      data.set(file.data.subarray(0, cr));
+      data.set(file.data.subarray(cr + 1), cr);
       file.data = data;
       file.hash = await hashOf(data);
     }
@@ -339,8 +342,26 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
     // A big file is hashed and written to a temp name as it inflates, when the thread may
     // block: `next`'s 97 MiB binary was 200 ms of hash, copies and write after its last byte.
     const spool = options.blocking ? createSpool(files) : undefined;
+    let manifest: ReturnType<typeof manifestOf>;
     try {
       await parse();
+      const json = latest.get("package.json");
+      manifest = manifestOf(json && packed(json.bin, json.file));
+      for (const path of manifest.bins) {
+        const entry = latest.get(path);
+        if (!entry) continue;
+        const { bin, file } = entry;
+        if (file.temp) {
+          await spool!.normalize(file);
+          continue;
+        }
+        const data = packed(bin, file);
+        const cr = shebangCR(data);
+        if (cr >= 0) {
+          data.copyWithin(cr, cr + 1); // packed bytes are our own copy
+          file.size--;
+        }
+      }
     } catch (error) {
       spool?.abandon();
       throw error;
@@ -380,30 +401,7 @@ export function createWriter(dir: string, options: WriterOptions = {}): Writer {
       tick("bytes", total);
     }
     for (const { bin, file } of latest.values()) bin.files.push(file);
-    const manifest = latest.get("package.json");
-    const {
-      bins: declared,
-      name,
-      version,
-      aliases,
-    } = manifestOf(manifest && packed(manifest.bin, manifest.file));
-    try {
-      for (const path of declared) {
-        const entry = latest.get(path);
-        if (!entry) continue;
-        const { bin, file } = entry;
-        if (file.temp) await spool!.normalize(file);
-        else {
-          const data = packed(bin, file);
-          const normalized = normalizeShebang(data);
-          if (normalized !== data) data.set(normalized);
-          file.size = normalized.length;
-        }
-      }
-    } catch (error) {
-      spool?.abandon();
-      throw error;
-    }
+    const { bins: declared, name, version, aliases } = manifest;
     // As many parts as the bytes are worth, and none too small to be worth its message: the
     // lightest bins fold into the next lightest until that holds.
     const count = Math.max(1, Math.min(most, Math.ceil(total / PART_BYTES)));
@@ -527,21 +525,22 @@ function createSpool(files: string): Spool {
       temps.push(temp);
       current = { fd, hash: builtin.crypto.createHash("sha512"), temp };
       // Remember an offset, not the line: the manifest may arrive later and the line has no limit.
-      let position = 0;
-      let previous = -1;
+      // `#!` and its CRLF can each straddle chunks.
+      let seen = 0;
+      let last = 0;
       let scanning = true;
       return (chunk) => {
-        // Both #! and CRLF can straddle chunks; stop at the first LF or a different prefix.
-        for (let i = 0; scanning && i < chunk.length; i++) {
-          const byte = chunk[i]!;
-          if (position < 2 && byte !== (position === 0 ? 0x23 : 0x21)) {
-            scanning = false;
-          } else if (byte === 0x0a) {
-            if (previous === 0x0d) current!.shebangCR = position - 1;
+        if (scanning) {
+          for (let i = 0; scanning && seen + i < 2 && i < chunk.length; i++) {
+            if (chunk[i] !== (seen + i === 0 ? 0x23 : 0x21)) scanning = false;
+          }
+          const lf = scanning ? chunk.indexOf(0x0a) : -1;
+          if (lf >= 0) {
+            if ((lf > 0 ? chunk[lf - 1] : last) === 0x0d) current!.shebangCR = seen + lf - 1;
             scanning = false;
           }
-          previous = byte;
-          position++;
+          seen += chunk.length;
+          last = chunk[chunk.length - 1] ?? last;
         }
         current!.hash.update(chunk);
         let at = 0;
@@ -593,16 +592,11 @@ function packed({ data }: Part, { chunk, at, size }: PartFile): Uint8Array {
   return new Uint8Array(data[chunk]!, at, size);
 }
 
-/** Strip only the CR before the first LF, and only when the file starts with a shebang. */
-function normalizeShebang(data: Uint8Array): Uint8Array {
-  if (data[0] !== 0x23 || data[1] !== 0x21) return data;
+/** Where the CR ending a `#!` line is, or -1. */
+function shebangCR(data: Uint8Array): number {
+  if (data[0] !== 0x23 || data[1] !== 0x21) return -1;
   const lf = data.indexOf(0x0a);
-  if (lf < 0 || data[lf - 1] !== 0x0d) return data;
-  // Tar entries can be views into the caller's plain archive; keep those bytes intact.
-  const normalized = new Uint8Array(data.length - 1);
-  normalized.set(data.subarray(0, lf - 1));
-  normalized.set(data.subarray(lf), lf - 1);
-  return normalized;
+  return lf > 0 && data[lf - 1] === 0x0d ? lf - 1 : -1;
 }
 
 /** The index of a tarball whose parts were written, from the blobs each part came back with. */
