@@ -27,11 +27,10 @@ const CORGI_REJECT = new Set([400, 406, 415]);
  */
 const HUGE = 2 * 1024 * 1024;
 /**
- * A peek that looks like it will be abandoned has its route started now rather than then: no
- * headers after `LATE_MS` (a CDN hit answers in ~30 ms, p90 ~50; the `@next/*` documents
- * past the cutoff are always misses), or past half the cutoff and still going.
+ * A peek past half the cutoff and still going has its route started now rather than then.
+ * Never on slow headers alone: a scoped route is an origin read, 200 ms and up, so a
+ * document only late to answer still beats it, and the route would be one more request.
  */
-const LATE_MS = 60;
 const LIKELY_HUGE = HUGE / 2;
 /**
  * How much bigger a full packument is than the abbreviated one, so that an abbreviated
@@ -228,7 +227,6 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     max: options.concurrency ?? 32,
     min: options.min,
   });
-  const start = options.start ?? 16;
   const corgis = new Map<string, Promise<TextView>>();
   const manifests = new Map<string, Promise<Manifest | undefined>>();
   const documents = new Map<string, Promise<TextView>>();
@@ -306,8 +304,8 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
   }
 
   /**
-   * The fetch machinery (~25 ms), loaded before a request is gated or timed, so neither the
-   * gate's latency nor a peek's `LATE_MS` counts it; a run that asks nothing never loads it.
+   * The fetch machinery (~25 ms), loaded before a request is gated, so the gate's latency
+   * does not count it; a run that asks nothing never loads it.
    */
   const ready = async () => {
     if (!options.fetch) await cacheLookups();
@@ -407,8 +405,6 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
     await ready();
     return await limit(async (signal) => {
       let response: Response;
-      // Not from a gate the registry has pulled back: it asked for fewer.
-      const late = big && limit.limit >= start ? setTimeout(big, LATE_MS) : undefined;
       try {
         response = await request(url, {
           headers: headers(url, accept, doc?.etag),
@@ -417,8 +413,6 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
       } catch (error) {
         if ((error as Error)?.name === "TimeoutError") signal.throttled();
         return undefined;
-      } finally {
-        clearTimeout(late);
       }
       if (response.status === 304 && doc) {
         return hit(touched(name, keyOf(url, accept), doc, response));
@@ -545,8 +539,9 @@ export function createRegistry(options: RegistryOptions = {}): Registry {
 
   async function loadManifest(name: string, version: string): Promise<Manifest> {
     const missing = () => fail(`Registry has no manifest for ${name}@${version}`, "E404");
-    const first = routeFirst(name);
-    const found = first ? await loadedVersion(name, version) : undefined;
+    // A route already asked, by `pinned` or past a peek's cutoff, is the answer at no cost.
+    const asked = routeFirst(name) || manifests.has(`${name}@${version}`);
+    const found = asked ? await loadedVersion(name, version) : undefined;
     if (found) return found;
     // Not started when the abbreviated document `pinned` read says it would be abandoned.
     let peeked: TextView | undefined;

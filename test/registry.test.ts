@@ -349,21 +349,18 @@ describe("manifest", () => {
     expect(s.calls).toHaveLength(2); // the route is memoized, and the full document skipped
   });
 
-  it("asks the route as well when a scoped pin's document is slow to answer", async () => {
-    // The document's headers never come until the test lets them: past the late mark the route
-    // is asked, and its answer is the pin's, with the document still on the way.
+  it("waits for a scoped pin's document when it is slow to answer, without the route", async () => {
+    // The document's headers come late: the route, an origin read, would be one more request.
     let release!: (response: Response) => void;
     const held = new Promise<Response>((r) => (release = r));
     const s = stub((call) => (route(call) ? json(one) : (held as never)));
     const registry = createRegistry({ registry: REGISTRY, fetch: s.fetch });
     const found = registry.pinned("@s/foo", "1.0.0");
-    await until(() => s.calls.length === 2);
-    expect(urls(s.calls)).toEqual(["/@s%2ffoo", "/@s%2ffoo/1.0.0"]);
-    expect(await found).toEqual(one); // the route's answer, not the document's
-    // The document is still read: a range on the name finds it, and asks for nothing.
+    await until(() => s.calls.length === 1);
+    await new Promise((r) => setTimeout(r, 100));
     release(json(small));
-    expect((await registry.view("@s/foo")).version("1.0.0")).toEqual(small.versions["1.0.0"]);
-    expect(s.calls).toHaveLength(2);
+    expect(await found).toEqual(one);
+    expect(urls(s.calls)).toEqual(["/@s%2ffoo"]);
   });
 
   it("skips the full packument when the abbreviated one `pinned` read says it would be abandoned", async () => {
@@ -457,7 +454,7 @@ describe("manifest", () => {
 
     expect(await registry.pinned("@s/foo", "2.0.0")).toEqual(two);
     expect(await registry.manifest("@s/foo", "2.0.0")).toEqual(two);
-    expect(urls(s.calls)).toEqual(["/@s%2ffoo", "/@s%2ffoo/2.0.0", "/@s%2ffoo"]);
+    expect(urls(s.calls)).toEqual(["/@s%2ffoo", "/@s%2ffoo/2.0.0"]);
   });
 
   it("throws E404 when no route has the version", async () => {
