@@ -23,8 +23,8 @@ export const EDIT_HELD = ".upm.editing";
  * Take `<nm>/.upm.linking` (or `name`), waiting while another process holds it. `waiting` is
  * told once, when there is a wait. Resolves to the release, which gives the file up only while
  * it is still the one this call made. The file holds the pid and a token: a freed inode is
- * reused at once, so only the token tells one holder's file from the next. On Linux it also
- * names where the pid means something, so a waiter there need not wait out STALE for a dead one.
+ * reused at once, so only the token tells one holder's file from the next. It also names where
+ * the pid means something, so a waiter there need not wait out STALE for a dead one.
  */
 export async function holdTree(
   nm: string,
@@ -33,7 +33,7 @@ export async function holdTree(
 ): Promise<() => Promise<void>> {
   const { mkdir, readFile, unlink, utimes, writeFile } = builtin.fsp;
   const path = builtin.path.join(nm, name);
-  const mine = `${[pid, token(), here()].join(" ").trimEnd()}\n`;
+  const mine = stamp();
   await mkdir(nm, { recursive: true }).catch((error: unknown) => {
     throw cannot(path, error);
   });
@@ -122,40 +122,60 @@ function giveUp(): void {
   listen(false);
 }
 
-/** Unique enough to tell two holders apart, and no crypto to load on a link that builds nothing. */
-function token(): string {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+/** The pid, a token unique enough to tell two holders apart without crypto, and `here()`. */
+function stamp(): string {
+  const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  return `${[pid, token, here()].join(" ").trimEnd()}\n`;
 }
 
 /** True when the file is gone or was a dead holder's and is now out of the way. */
 async function takeOver(path: string): Promise<boolean> {
-  const { readFile, rename, stat, unlink, writeFile } = builtin.fsp;
-  let age: number;
-  let judged: string;
+  const { unlink, writeFile } = builtin.fsp;
+  let judged: Seen;
   try {
-    age = Date.now() - (await stat(path)).mtimeMs;
-    judged = await readFile(path, "utf8");
+    judged = await look(path);
   } catch (error) {
     return gone(path, error);
   }
-  const [first = "", , where] = judged.trim().split(" ");
-  const holder = Number.parseInt(first, 10);
-  // Made on this boot and in this pid namespace, a pid that is gone is a holder that died.
-  const local = where !== undefined && where === here();
-  if (!local && age < STALE) return false;
-  if (age < ABANDONED && holder > 0 && alive(holder)) return false;
-  // Moved aside rather than removed: a second waiter that judged the same dead file must not
-  // remove the one the first just made. If what moved was not what we judged, put it back.
-  const aside = `${path}.${pid}-${token()}`;
+  if (!dead(judged)) return false;
+  // Only the waiter that makes this file removes the dead one. Two that judged it at once would
+  // otherwise each remove it, the second the file the first made after.
+  const taking = `${path}.taking`;
   try {
-    await rename(path, aside);
+    await writeFile(taking, stamp(), { flag: "wx" });
   } catch (error) {
-    return gone(path, error); // someone else moved it first
+    if ((error as { code?: string }).code !== "EEXIST") return gone(taking, error);
+    return takeOver(taking); // out of the way only when its maker died there
   }
-  const moved = await readFile(aside, "utf8").catch(() => judged);
-  if (moved !== judged) await writeFile(path, moved, { flag: "wx" }).catch(() => {});
-  await unlink(aside).catch(() => {});
-  return true;
+  try {
+    const now = await look(path);
+    if (now.text === judged.text && now.mtime === judged.mtime) await unlink(path);
+    return true;
+  } catch (error) {
+    return gone(path, error);
+  } finally {
+    await unlink(taking).catch(() => {});
+  }
+}
+
+interface Seen {
+  text: string;
+  mtime: number;
+}
+
+async function look(path: string): Promise<Seen> {
+  const { readFile, stat } = builtin.fsp;
+  const { mtimeMs } = await stat(path);
+  return { text: await readFile(path, "utf8"), mtime: mtimeMs };
+}
+
+function dead({ text, mtime }: Seen): boolean {
+  const age = Date.now() - mtime;
+  const [first = "", , where] = text.trim().split(" ");
+  const holder = Number.parseInt(first, 10);
+  // Made here, a pid that is gone is a holder that died.
+  if (!(where !== undefined && same(where)) && age < STALE) return false;
+  return !(age < ABANDONED && holder > 0 && alive(holder));
 }
 
 /**
@@ -170,6 +190,7 @@ function gone(path: string, error: unknown): boolean {
 }
 
 const WIN = globalThis.process?.platform === "win32";
+const MAC = globalThis.process?.platform === "darwin";
 
 /**
  * A moment's refusal, not a tree that cannot be written. Windows says EPERM or EACCES for a
@@ -188,17 +209,34 @@ function cannot(path: string, error: unknown): Error {
 let place: string | undefined;
 
 /**
- * This boot of this machine and this pid namespace, where Linux names them, else "". Two hosts
- * sharing a tree over NFS have the same root namespace, so the boot id tells them apart.
+ * This boot of this machine and this pid namespace, where Linux names them. Two hosts sharing a
+ * tree over NFS have the same root namespace, so the boot id tells them apart. macOS and Windows
+ * have no pid namespaces: the host name and the second it booted. Else "".
  */
 function here(): string {
   if (place !== undefined) return place;
+  place = "";
   try {
-    const { readFileSync, readlinkSync } = builtin.fs;
-    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-    place = `${boot}/${readlinkSync("/proc/self/ns/pid")}`;
-  } catch {
-    place = "";
-  }
+    if (MAC || WIN) {
+      const { hostname, uptime } = builtin.os;
+      place = `${encodeURIComponent(hostname())}:${Math.round(Date.now() / 1000 - uptime())}`;
+    } else {
+      const { readFileSync, readlinkSync } = builtin.fs;
+      const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      place = `${boot}/${readlinkSync("/proc/self/ns/pid")}`;
+    }
+  } catch {}
   return place;
+}
+
+/**
+ * Whether `where` is `here()`. A boot second comes from `os.uptime()`, whole seconds against a
+ * clock that moves, so it may be off by a little. A Linux one's tail is no number: exact only.
+ */
+function same(where: string): boolean {
+  const mine = here();
+  if (where === mine) return mine !== "";
+  const cut = mine.lastIndexOf(":") + 1;
+  const drift = Number(where.slice(cut)) - Number(mine.slice(cut));
+  return cut > 0 && where.slice(0, cut) === mine.slice(0, cut) && Math.abs(drift) <= 2;
 }
