@@ -106,9 +106,13 @@ compatibility. Keep this page about open work, not completed implementation step
 
 These need a scope decision, not just a patch:
 
-- No dependency lifecycle scripts, Git or directory dependencies. Explicit project scripts
-  via `upm run` are a separate feature. A tarball dependency's path is relative and from the
-  root or a workspace only; `exec`, `resolve` and `fetch` take registry specs only.
+- No dependency lifecycle scripts, Git or directory dependencies but `link:`. Explicit project
+  scripts via `upm run` are a separate feature. A tarball dependency's path, and a `link:` one,
+  is relative and from the root or a workspace only; `exec`, `resolve` and `fetch` take
+  registry specs only. `link:` is pnpm's (a path, linked as it is, its dependencies not
+  installed), not bun's `link:<name>`, which would need a global registry and a `link`
+  command. A `link:` directory is never offered as a peer: its version is read only at install.
+  A `pnpm-lock.yaml` with a `link:` importer edge is still refused (`src/foreign-lock.ts`).
 - Another manager's lockfile (`package-lock.json`, `pnpm-lock.yaml`, `bun.lock`) is read in
   memory when there is no `upm.lock` (`src/foreign-lock.ts`), and never written: whatever needs a
   resolve is refused, not saved to a new `upm.lock`. Not read: yarn (berry has no tarball
