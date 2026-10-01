@@ -48,7 +48,9 @@ need CPU-limited cases and a no-op run that should not start unnecessary threads
 
 Separate a local mirror, a latency/bandwidth model and a live registry in reports.
 The mirror can itself be the bottleneck; the model is a hypothesis, not proof of
-remote behavior. A faster metadata route may trade latency for more downloaded bytes.
+remote behavior. A replayed recording (`bench.sh --registry replay`) is such a model:
+stable enough to compare builds, but fixed to the day and network it was recorded on.
+A faster metadata route may trade latency for more downloaded bytes.
 
 ## Find what the install waits for
 

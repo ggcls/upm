@@ -11,6 +11,7 @@ how often it repeats in real lockfiles. See [perf.md](../.agents/perf.md).
 ./bench.sh -r upm,pnpm12 -f nuxt   # a subset
 ./bench.sh --cold 5 --warm 5       # more samples
 ./bench.sh --registry vlt          # every manager against vlt's registry
+./bench.sh --registry replay       # against a local recording of npm's, see below
 ./bench.sh -f tiny --cold 1 --warm 0 --repeat 0  # quick, refreshes charts/size.svg
 node report.ts results/<stamp>.jsonl  # markdown tables (bench.sh does not print them)
 node chart.ts                      # re-render the charts for the newest run
@@ -59,11 +60,12 @@ the repo. Any `core.<pid>` newer than the run is deleted on exit.
 it. Run the same managers on two registries and each manager's rows show what the registry
 changed.
 
-| value   | registry                                                              |
-| ------- | --------------------------------------------------------------------- |
-| `npm`   | each manager's default: `registry.npmjs.org`, or its proxy for yarn 1 |
-| `vlt`   | `https://registry.vlt.io/$BENCH_VLT_ACCOUNT/npm/`                     |
-| `<url>` | any npm-compatible registry                                           |
+| value    | registry                                                              |
+| -------- | --------------------------------------------------------------------- |
+| `npm`    | each manager's default: `registry.npmjs.org`, or its proxy for yarn 1 |
+| `vlt`    | `https://registry.vlt.io/$BENCH_VLT_ACCOUNT/npm/`                     |
+| `replay` | a recording of npm's by `record.sh`, served by `registry.ts`          |
+| `<url>`  | any npm-compatible registry                                           |
 
 vlt serves npm packages only under an account, and only with its token, so `vlt` needs
 `BENCH_VLT_ACCOUNT` (a vlt.io account or organization) and `BENCH_REGISTRY_TOKEN`. A token
@@ -83,6 +85,83 @@ told to always send it, so they are.
 Each row records `registry`. The reports and charts show a row from another registry as its
 own manager row, with the registry after the version. A full suite on another registry does
 not replace the committed `charts/`.
+
+## Record and replay
+
+The live registry changes under a benchmark: the CDN caches some urls and not others, the
+network has slow minutes, and new releases change the graph. `registry.ts` takes that out. It
+is a small Node server with two modes:
+
+- **record** proxies every request to the upstream registry (`https://registry.npmjs.org`)
+  and keeps the request, the response and its timing: time to first byte and to the last,
+  from when the request leaves on a connected socket. A wait for one of the proxy's sockets
+  or a new connection's handshake is not counted, or a manager's burst of requests would
+  record its queue as the registry's latency.
+- **replay** answers from the recording alone. It waits the recorded time to first byte,
+  then sends the body in 64 KiB chunks spread over the recorded transfer time. Each request
+  gets its manager's first recorded body, and the median time of every recorded sample of
+  that url, by any manager, so all wait the same for the same document or tarball: per
+  abbreviated or full document, but one for a tarball, whatever `Accept` it was asked with.
+  The wait counts from the request's arrival, reading the body from disk included. Bodies
+  are read per response, not held: a full recording is over a gigabyte.
+- Responses keep the CDN's `age` and `cache-control`, so a manager that honors HTTP caching
+  revalidates when it would have live.
+
+```sh
+./bench.sh --registry replay       # records what is missing, then times against the recording
+./record.sh -r upm,pnpm12 -f tiny  # records by hand, adding to the recording
+rm -rf recording                   # start over: the next replay records everything again
+```
+
+A replay first records, untimed, each runner and fixture the recording lacks at that
+runner's version, so the first full replay runs every manager through record mode once and
+later ones touch no network. upm counts at any build. `recording/recorded` lists what is
+there; a pair with a failed run is left out and recorded again next time.
+
+The recording keeps one version of each manager. Each uses the server under its own path,
+`/~<runner>/<version>/`, so every response is kept as that manager's. When a manager is
+recorded at a new version, `registry.ts settle` drops what its older version recorded, on
+every fixture, and any body nothing else uses; the next replay records the other fixtures
+again for the new version.
+
+`record.sh` runs `bench.sh` through the server in record mode: three cold rounds, one warm,
+one repeat. The first request for a url meets the CDN's miss and the proxy's new connections.
+More rounds give the median a typical sample, so that cost does not land on whichever manager
+asked first. Other options go to `bench.sh`; `--port` (default 4880), `--upstream` and
+`-o <dir>` go to the server.
+
+The recording lives in `BENCH_RECORDING` (default `bench/recording`, gitignored: a full one
+is gigabytes, mostly tarballs): `meta.json`, `index.jsonl` (one line per response),
+`bodies/<sha256>` and `recorded`. JSON bodies are stored with the
+upstream origin replaced by the server's, so tarballs come through it too, and a recording
+replays on the port and scheme it was recorded on. Delete the directory to record from scratch.
+
+- **TLS, as on the live registry.** A new recording is served over https with a certificate
+  from its own CA (`tls/ca.pem`, made with openssl), so each manager pays its handshakes and
+  encryption. HTTP/2 is offered by ALPN beside HTTP/1.1, as npm's CDN does: deno, aube and
+  nub take it, the rest stay on HTTP/1.1, and the server logs which each speaks. Each
+  manager is told to trust the CA in its own way, only for the install: `NODE_EXTRA_CA_CERTS`
+  (upm, npm, pnpm, yarn 1, bun, vlt), `DENO_CERT`, `SSL_CERT_FILE` (aube, nub) and yarn 4's
+  `YARN_HTTPS_CA_FILE_PATH`. `record.sh --plain` records over http instead.
+
+- **The release-age gate counts back from the recording's start**, not from now
+  (`BENCH_AGE_FROM`), in record and replay alike. Otherwise a week-old recording would let
+  managers pick versions released since, which it does not hold. npm and upm get the exact
+  date as `before`.
+- **A request matches** on method, url, `Accept` and `Accept-Encoding`. A manager asking a
+  little differently gets the closest recorded answer the live registry could have given,
+  never an abbreviated document for a full one, and a body it cannot decode is sent plain.
+  The server logs each near match and miss to `<work>/logs/registry.log`, and its last line
+  counts them. A miss is a 404, so a stale recording shows up as failed runs. A manager
+  can also ask for a slightly different set of urls each run: upm fetches a varying share
+  of the foreign-platform version documents of an optional binding, so an odd miss of one is
+  expected and harmless.
+- **Not the live registry:** a handshake costs the CPU but not the round trips it would to a
+  CDN, recorded times come from the proxy's own pooled connections, and the server shares the
+  machine's CPU with the manager. Concurrent responses are not throttled to a shared
+  bandwidth. Compare managers on one recording; check a claim about network behavior
+  against the live registry too.
+- `BENCH_REPLAY_LATENCY=<factor>` scales every recorded time; `0` serves at loopback speed.
 
 ## Fixtures
 

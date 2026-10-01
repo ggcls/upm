@@ -139,22 +139,41 @@ runner_packed_bytes() {
 # The release-age gate every manager gets, in whole days. Set here, not left to a machine's
 # npmrc, yarnrc or environment, so every machine resolves the same versions. yarn 1 has no gate.
 MIN_AGE_DAYS="${BENCH_MIN_AGE_DAYS:-1}"
+# Sets AGE_CUTOFF (epoch seconds) and AGE_SECONDS for one install: the gate counts back from
+# now, or from BENCH_AGE_FROM (epoch seconds) when set. record.sh and `--registry replay` set it
+# to the recording's start, so a replay resolves the versions that were recorded, however much
+# later it runs. BENCH_AGE_NOW stands in for now: bench.sh holds it from a pair's cold run
+# through its warm and repeat runs, so a manager sees one setting, as a user's config is. A
+# pinned gate otherwise grows a minute each minute, and pnpm, finding a larger
+# minimumReleaseAge than its cached lockfile check had, verifies the lockfile again and
+# revalidates the metadata of every package in it.
+age_gate() {
+  local now="${BENCH_AGE_NOW:-}"
+  [ -n "$now" ] || now="$(date +%s)"
+  AGE_CUTOFF=$(( ${BENCH_AGE_FROM:-$now} - MIN_AGE_DAYS * 86400 ))
+  AGE_SECONDS=$(( now - AGE_CUTOFF ))
+}
+age_minutes() { echo $(( (AGE_SECONDS + 59) / 60 )); }
+age_date() { date -u -d "@$AGE_CUTOFF" +%Y-%m-%dT%H:%M:%SZ; }
 # Runs its arguments with pnpm's `minimum-release-age`, in minutes, for pnpm, aube and nub:
 # without it each uses a day of its own, and npm warns about the key, so it is theirs alone.
 pnpm_age() {
-  local minutes=$((MIN_AGE_DAYS * 1440))
+  local minutes; minutes="$(age_minutes)"
   npm_config_minimum_release_age="$minutes" pnpm_config_minimum_release_age="$minutes" "$@"
 }
 
 # Runs one install command under measure.pl, which times it and records its rusage into
 # $MEASURE_OUT. Only the command is measured, not the setup around it in runner_install.
-# The gate goes in the environment: npm's `min-release-age` in days (upm, npm) and
-# yarn 4's in minutes. An inherited `npm_config_min-release-age` is dropped, since which
-# spelling wins would be each manager's choice. pnpm, aube and nub read pnpm's key instead
-# (`pnpm_age`), bun and deno take a flag and vlt a date; all are set in runner_install.
+# The gate goes in the environment: npm's `min-release-age` in days (upm, npm), or its exact
+# `before` date when pinned by BENCH_AGE_FROM, and yarn 4's in minutes. An inherited
+# `npm_config_min-release-age` is dropped, since which spelling wins would be each manager's
+# choice. pnpm, aube and nub read pnpm's key instead (`pnpm_age`), bun and deno take a flag and
+# vlt a date; all are set in runner_install.
 measure() {
-  env -u npm_config_min-release-age \
-    npm_config_min_release_age="$MIN_AGE_DAYS" YARN_NPM_MINIMAL_AGE_GATE="$((MIN_AGE_DAYS * 1440))" \
+  local npm_gate="npm_config_min_release_age=$MIN_AGE_DAYS"
+  [ -z "${BENCH_AGE_FROM:-}" ] || npm_gate="npm_config_before=$(age_date)"
+  env -u npm_config_min-release-age -u npm_config_before \
+    "$npm_gate" YARN_NPM_MINIMAL_AGE_GATE="$(age_minutes)" \
     perl "$UPM_ROOT/bench/measure.pl" "$MEASURE_OUT" "$@"
 }
 
@@ -178,8 +197,20 @@ registry_npmrc() {
 # wrong per manager.
 runner_install() {
   local name="$1" cache="$2" CMD
+  # On the local registry (record.sh, replay) each manager has its own path, so the recording
+  # knows whose request it was and keeps one version of each.
+  local REGISTRY_URL="$REGISTRY_URL"
+  [ -z "${REGISTRY_PER_RUNNER:-}" ] || REGISTRY_URL+="~$name/$(recording_version "$name")/"
+  # Its CA, over TLS, each manager told to trust it in its own way: Node's extra CAs (upm,
+  # npm, pnpm, yarn 1, vlt, bun), deno's, the OpenSSL file (aube, nub) and yarn 4's setting.
+  # Exported in the subshell of one install.
+  if [ -n "${REGISTRY_CA:-}" ]; then
+    export NODE_EXTRA_CA_CERTS="$REGISTRY_CA" DENO_CERT="$REGISTRY_CA" SSL_CERT_FILE="$REGISTRY_CA" \
+      YARN_HTTPS_CA_FILE_PATH="$REGISTRY_CA"
+  fi
   runner_cmd "$name" || return
   registry_npmrc
+  age_gate
   case "$name" in
     upm)
       measure "${CMD[@]}" install --store "$cache/store"
@@ -210,6 +241,11 @@ runner_install() {
     yarn4)
       [ -e yarn.lock ] || : > yarn.lock
       [ -z "$REGISTRY_URL" ] || export YARN_NPM_REGISTRY_SERVER="$REGISTRY_URL"
+      # A local registry (record.sh, replay) is plain http, which yarn 4 refuses unless listed.
+      if [[ "$REGISTRY_URL" == http://* ]]; then
+        local host="${REGISTRY_URL#http://}"
+        export YARN_UNSAFE_HTTP_WHITELIST="${host%%[:/]*}"
+      fi
       # Without always-auth, yarn sends the token only for scoped packages.
       [ -z "$REGISTRY_TOKEN" ] || export YARN_NPM_AUTH_TOKEN="$REGISTRY_TOKEN" YARN_NPM_ALWAYS_AUTH=true
       YARN_GLOBAL_FOLDER="$cache/berry" YARN_NODE_LINKER=node-modules \
@@ -218,12 +254,12 @@ runner_install() {
       ;;
     bun)
       BUN_INSTALL_CACHE_DIR="$cache/bun" measure "${CMD[@]}" install --ignore-scripts \
-        --minimum-release-age="$((MIN_AGE_DAYS * 86400))"
+        --minimum-release-age="$AGE_SECONDS"
       ;;
     deno)
       # DENO_DIR holds the npm cache and everything else deno caches.
       DENO_DIR="$cache/deno" measure "${CMD[@]}" install --node-modules-dir=auto --quiet \
-        --min-dep-age="$((MIN_AGE_DAYS * 1440))"
+        --min-dep-age="$(age_minutes)"
       ;;
     aube)
       AUBE_STORE_DIR="$cache/store" XDG_CACHE_HOME="$cache/xdg" pnpm_age measure "${CMD[@]}" install --ignore-scripts
@@ -239,7 +275,65 @@ runner_install() {
       XDG_CACHE_HOME="$cache/xdg" XDG_DATA_HOME="$cache/xdg-data" XDG_STATE_HOME="$cache/xdg-state" \
         measure "${CMD[@]}" install --cache "$cache/vlt" \
         --registries "npm=${REGISTRY_URL:-https://registry.npmjs.org/}" \
-        --before "$(date -u -d "-$MIN_AGE_DAYS days" +%Y-%m-%dT%H:%M:%SZ)"
+        --before "$(age_date)"
       ;;
   esac
+}
+
+# Starts registry.ts (record or replay) in the background and waits until it listens. Sets
+# REGISTRY_PID, REGISTRY_ORIGIN to the url it serves and, over TLS, REGISTRY_CA to its CA.
+registry_start() { # <record|replay> <dir> <log> [registry.ts options...]
+  local mode="$1" dir="$2" log="$3" i
+  shift 3
+  node "$UPM_ROOT/bench/registry.ts" "$mode" "$dir" "$@" >"$log" 2>&1 &
+  REGISTRY_PID=$!
+  for i in $(seq 100); do
+    REGISTRY_ORIGIN="$(sed -n 's/^registry: .* on //p' "$log")"
+    if [ -n "$REGISTRY_ORIGIN" ]; then
+      REGISTRY_CA=""
+      [[ "$REGISTRY_ORIGIN" != https://* ]] || REGISTRY_CA="$dir/tls/ca.pem"
+      return 0
+    fi
+    kill -0 "$REGISTRY_PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  echo "registry did not start, see $log" >&2
+  return 1
+}
+
+# Stops it and prints its last line: how many responses it recorded, or served and missed.
+registry_stop() { # <log>
+  [ -n "${REGISTRY_PID:-}" ] || return 0
+  kill "$REGISTRY_PID" 2>/dev/null || true
+  wait "$REGISTRY_PID" 2>/dev/null || true
+  REGISTRY_PID=""
+  tail -n 1 "$1"
+  # A miss is a quick 404, so a run that got past it may look fast and successful.
+  if tail -n 1 "$1" | grep -q 'missed [1-9]'; then
+    echo "! requests missing from the recording, see $1; record.sh -r <runner> -f <fixture> adds them" >&2
+  fi
+}
+
+# Where record.sh writes and `bench.sh --registry replay` reads: in the repo, gitignored.
+RECORDING="${BENCH_RECORDING:-$UPM_ROOT/bench/recording}"
+
+# The version a recording keeps of a runner. upm's is any: its build changes with every
+# commit, and a request it newly makes shows up as a miss in the replay.
+recording_version() {
+  if [ "$1" = upm ]; then echo any; else echo "${RUNNER_VERSION[$1]}"; fi
+}
+
+# The runners of the list that have no clean recording of the fixture at their version, space
+# separated.
+recording_missing() { # <dir> <fixture> <runner>...
+  local dir="$1" fixture="$2" r
+  shift 2
+  for r in "$@"; do
+    grep -qxF "$fixture $r $(recording_version "$r")" "$dir/recorded" 2>/dev/null || printf '%s ' "$r"
+  done
+}
+
+# The start of a recording, in epoch seconds: what BENCH_AGE_FROM counts the gate back from.
+recording_start() { # <dir>
+  node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).recorded' "$1/meta.json"
 }

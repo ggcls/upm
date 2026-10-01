@@ -5,6 +5,7 @@
 #   ./bench.sh -r upm,bun -f nitro  # a subset
 #   ./bench.sh --cold 3 --warm 5        # more samples
 #   ./bench.sh --registry vlt           # every manager against vlt's registry
+#   ./bench.sh --registry replay        # against a recording of npm's (record.sh)
 #
 # Results go to results/<stamp>.jsonl, one JSON object per timed run, and the charts beside
 # them, one per phase: <stamp>.<phase>.svg, .<phase>.memory.svg and .<phase>.cpu.svg,
@@ -52,7 +53,7 @@ Options
       --keep             do not delete each pair's project + cache when done
       --min-free <mb>    abort if free disk drops below this (default $MIN_FREE_MB)
   -o, --out <file>       results file (default results/<stamp>.jsonl)
-      --registry <name>  npm (default: each manager's own), vlt, or a registry url
+      --registry <name>  npm (default: each manager's own), vlt, replay, or a registry url
       --no-chart         skip rendering the SVG at the end
       --dry-run          print the plan and exit
   -h, --help             this
@@ -89,6 +90,9 @@ done
 REGISTRY_TOKEN="${BENCH_REGISTRY_TOKEN:-}"
 case "$REGISTRY" in
   npm) REGISTRY_URL="" ;;
+  # A recording made by record.sh (RECORDING), served by registry.ts. What it lacks is
+  # recorded first, below.
+  replay) REGISTRY_URL="" ;; # set once the server listens
   vlt)
     # vlt serves npm packages only per account, and only with that account's token.
     [ -n "${BENCH_VLT_ACCOUNT:-}" ] || die "--registry vlt needs BENCH_VLT_ACCOUNT, a vlt.io account or organization"
@@ -99,7 +103,7 @@ case "$REGISTRY" in
     REGISTRY_URL="${REGISTRY%/}/"
     REGISTRY="${REGISTRY_URL#*://}"; REGISTRY="${REGISTRY%/}"
     ;;
-  *) die "unknown registry: $REGISTRY (npm, vlt or a url)" ;;
+  *) die "unknown registry: $REGISTRY (npm, vlt, replay or a url)" ;;
 esac
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -211,7 +215,11 @@ echo "bench: runners  : $RUNNERS"
 echo "bench: fixtures : $FIXTURES"
 echo "bench: samples  : cold=$COLD_RUNS warm=$WARM_RUNS repeat=$REPEAT_RUNS"
 echo "bench: workdir  : $WORK"
-echo "bench: registry : $REGISTRY${REGISTRY_URL:+ ($REGISTRY_URL)}"
+if [ "$REGISTRY" = replay ]; then
+  echo "bench: registry : replay ($RECORDING)"
+else
+  echo "bench: registry : $REGISTRY${REGISTRY_URL:+ ($REGISTRY_URL)}"
+fi
 echo "bench: results  : $OUT"
 [ "$DRY" = 1 ] && exit 0
 
@@ -229,14 +237,16 @@ sweep_cores() {
   done
   rm -f "$OUT.started"
 }
-trap sweep_cores EXIT
+trap 'sweep_cores; registry_stop "$LOGDIR/registry.log"' EXIT
 
 # The upm runner measures dist/, so it has to be this working tree's build and not
 # whatever was left there last. Skipped when UPM_CLI points somewhere else.
-if [[ " $RUNNERS " == *" upm "* && "$UPM_CLI" == "$UPM_ROOT/dist/upm.mjs" ]]; then
+# BENCH_BUILT: built already by the bench.sh that recorded for a replay.
+if [[ " $RUNNERS " == *" upm "* && "$UPM_CLI" == "$UPM_ROOT/dist/upm.mjs" && -z "${BENCH_BUILT:-}" ]]; then
   echo "bench: building upm dist/..."
   ( cd "$UPM_ROOT" && node ./upm run build ) >"$LOGDIR/upm-build.log" 2>&1 \
     || die "upm build failed, see $LOGDIR/upm-build.log"
+  export BENCH_BUILT=1
 fi
 
 # Resolve every manager to its entry first: the download of a pinned manager is jup's cost,
@@ -265,17 +275,44 @@ sample() { # runner fixture phase iter
   local proj="$pair/project" cache="$pair/cache" log="$LOGDIR/$runner-$fixture.log"
   local ms ok rss one user sys bytes pkgs
   case "$phase" in
-    cold) reset_project "$proj" "$fixture"; rm -rf "$cache"; mkdir -p "$cache" ;;
+    cold) reset_project "$proj" "$fixture"; rm -rf "$cache"; mkdir -p "$cache"; GATE_NOW[$runner]="$(date +%s)" ;;
     warm) find "$proj" -name node_modules -prune -exec rm -rf {} + ;; # a workspace's too
   esac
-  read -r ms ok rss one user sys <<<"$(timed_install "$runner" "$proj" "$cache" "$log" "$pair/usage")"
+  read -r ms ok rss one user sys <<<"$(BENCH_AGE_NOW="${GATE_NOW[$runner]:-${BENCH_AGE_NOW:-}}" \
+    timed_install "$runner" "$proj" "$cache" "$log" "$pair/usage")"
   read -r bytes pkgs <<<"$(tree_stats "$proj")"
   emit "$runner" "${VERSION[$runner]}" "$fixture" "$phase" "$i" "$ms" "$ok" "$bytes" "$pkgs" \
     "$(cache_bytes "$cache")" "${SIZE[$runner]}" "${PACKED[$runner]}" "$rss" "$one" "$user" "$sys" "$REGISTRY"
   progress "$runner" "$phase" "$i" "$ms" "$ok" "$pkgs" "$rss" "$user" "$sys"
 }
 
-declare -A VERSION=() SIZE=()
+# A replay first records each runner and fixture the recording lacks at that runner's version,
+# untimed, through record.sh. The gate then counts back from the recording's start, so every
+# manager asks for what was recorded.
+if [ "$REGISTRY" = replay ]; then
+  for fixture in $FIXTURES; do
+    # shellcheck disable=SC2086 # RUNNERS is a word list
+    missing="$(recording_missing "$RECORDING" "$fixture" $RUNNERS)"
+    [ -n "$missing" ] || continue
+    echo "bench: recording $fixture for: $missing"
+    "$HERE/record.sh" -o "$RECORDING" -r "$(echo $missing | tr ' ' ,)" -f "$fixture" 2>&1 \
+      | tee "$LOGDIR/record-$fixture.log" | sed 's/^/  record: /' \
+      || die "recording $fixture failed, see $LOGDIR/record-$fixture.log"
+    # shellcheck disable=SC2086
+    missing="$(recording_missing "$RECORDING" "$fixture" $RUNNERS)"
+    [ -z "$missing" ] || echo "bench: ! $fixture still not recorded for: $missing (see $LOGDIR/record-$fixture.log)" >&2
+  done
+  BENCH_AGE_FROM="$(recording_start "$RECORDING")"
+  export BENCH_AGE_FROM
+  REGISTRY_PER_RUNNER=1
+  registry_start replay "$RECORDING" "$LOGDIR/registry.log" ${BENCH_REPLAY_LATENCY:+--latency "$BENCH_REPLAY_LATENCY"} \
+    || die "replay registry did not start, see $LOGDIR/registry.log"
+  REGISTRY_URL="$REGISTRY_ORIGIN/"
+  echo "bench: replaying $RECORDING on $REGISTRY_URL"
+fi
+
+# The moment each runner's release-age gate counts from, set by its cold run: see age_gate.
+declare -A VERSION=() SIZE=() GATE_NOW=()
 for r in $RUNNERS; do
   VERSION[$r]="$(runner_version "$r")"
   SIZE[$r]="$(runner_bytes "$r" 2>/dev/null)"
@@ -311,13 +348,14 @@ echo "bench: done -> $OUT"
 echo "bench: report with: node $HERE/report.ts $OUT"
 
 if [ "$CHART" = 1 ]; then
-  # Only a full suite on the default registry replaces the committed charts/ the README links to.
+  # Only a full suite on npm's registry, live or replayed, replaces the committed charts/ the
+  # README links to.
   full=0
-  [ "$RUNNERS" = "$ALL_RUNNERS" ] && [ "$FIXTURES" = "$ALL_FIXTURES" ] && [ "$REGISTRY" = npm ] && full=1
+  [ "$RUNNERS" = "$ALL_RUNNERS" ] && [ "$FIXTURES" = "$ALL_FIXTURES" ] && [[ "$REGISTRY" == @(npm|replay) ]] && full=1
   # A manager's size does not depend on the fixtures, so any run of every manager refreshes
   # the committed size chart.
   all=0
-  [ "$RUNNERS" = "$ALL_RUNNERS" ] && [ "$REGISTRY" = npm ] && all=1
+  [ "$RUNNERS" = "$ALL_RUNNERS" ] && [[ "$REGISTRY" == @(npm|replay) ]] && all=1
   for measure in time memory cpu; do
     node "$HERE/chart.ts" "$OUT" --measure "$measure" \
       || echo "bench: $measure chart failed, results are still in $OUT" >&2

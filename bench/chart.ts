@@ -23,6 +23,8 @@ const METRIC_LABEL: Record<Metric, string> = {
   min: "Fastest",
   max: "Slowest",
 };
+// How the subtitle names the one registry every run used, when not npm's.
+const REGISTRY_LABEL: Record<string, string> = { replay: "npm registry replayed from a recording" };
 // Fastest and slowest only make sense for time.
 const AMOUNT_LABEL: Record<Metric, string> = { ...METRIC_LABEL, min: "Lowest", max: "Highest" };
 const MEASURE_NOTE: Record<Measure, string> = {
@@ -445,7 +447,7 @@ export function build(data: Benchmark): string {
     ),
   );
   const title = `Package manager benchmarks${single ? ` · ${PHASE_LABEL[data.phases[0]!]} install` : ""}${isTime ? "" : ` · ${measure.label}`}`;
-  const subtitle = `${(isTime ? METRIC_LABEL : AMOUNT_LABEL)[data.metric]} ${measure.label} · lower is better · ranked by overall score`;
+  const subtitle = `${(isTime ? METRIC_LABEL : AMOUNT_LABEL)[data.metric]} ${measure.label}${data.registry ? ` · ${REGISTRY_LABEL[data.registry] ?? `registry ${data.registry}`}` : ""} · lower is better · ranked by overall score`;
   const subtitleLines = wrap(subtitle, width - PAD * 2, 12);
   const legend = data.phases.map((phase) => `${PHASE_LABEL[phase]}: ${PHASE_TEXT[phase]}`);
   const legendLines = wrap(legend.join("   ·   "), width - PAD * 2, 12);

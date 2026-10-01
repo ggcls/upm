@@ -81,6 +81,8 @@ export interface Benchmark {
   measure: Measure;
   groups: Map<string, Summary>;
   best: Map<string, number>;
+  /** The one registry every run used, when it is not npm's (`bench.sh --registry`). */
+  registry?: string;
 }
 
 export function parseRows(text: string, source = "results"): Run[] {
@@ -197,12 +199,17 @@ export function aggregate(
   const value = MEASURE[measure].value;
   rows = rows.filter((row) => value(row) !== undefined);
   if (!rows.length) throw new Error(`no ${MEASURE[measure].label} in these results`);
-  // A run on another registry is its own row, named beside the version.
-  rows = rows.map((row) =>
-    row.registry && row.registry !== "npm"
-      ? { ...row, version: `${row.version} · ${row.registry}` }
-      : row,
-  );
+  // A run on another registry is its own row, named beside the version. When every run used
+  // the same one, it is named once for all instead.
+  const registries = new Set(rows.map((row) => row.registry ?? "npm"));
+  const registry = registries.size === 1 ? [...registries][0] : undefined;
+  if (!registry) {
+    rows = rows.map((row) =>
+      row.registry && row.registry !== "npm"
+        ? { ...row, version: `${row.version} · ${row.registry}` }
+        : row,
+    );
+  }
   const names = ordered(
     rows.map((row) => row.runner),
     RUNNERS,
@@ -267,7 +274,17 @@ export function aggregate(
       }
     }
   }
-  return { rows, runners, fixtures, phases: shown, metric, measure, groups, best };
+  return {
+    rows,
+    runners,
+    fixtures,
+    phases: shown,
+    metric,
+    measure,
+    groups,
+    best,
+    ...(registry && registry !== "npm" && { registry }),
+  };
 }
 
 export function isBest(data: Benchmark, phase: Phase, fixture: string, entry: Summary): boolean {

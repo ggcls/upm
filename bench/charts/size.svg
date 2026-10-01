@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="720" viewBox="0 0 1120 720" font-family="system-ui,-apple-system,&apos;Segoe UI&apos;,Roboto,Helvetica,Arial,sans-serif" role="img" aria-labelledby="title description">
 <title id="title">Package manager size</title>
-<desc id="description">On-disk size of upm dist-8da7bb4: 308 kB, yarn4 4.18.1: 3.79 MB, yarn1 1.22.22: 5.34 MB, vlt 1.3.0: 9.94 MB, npm 12.1.0: 12.4 MB, pnpm11 11.22.0: 38.2 MB, aube 2.6.1: 44.5 MB, pnpm12 12.8.1: 59.8 MB, nub 0.9.5: 60.5 MB, bun 1.4.2: 79.5 MB, deno 2.9.6: 95.6 MB. Size on disk and estimated CI cache restore · smaller is better.</desc>
+<desc id="description">On-disk size of upm dist-10f9faa: 308 kB, yarn4 4.18.1: 3.79 MB, yarn1 1.22.22: 5.34 MB, vlt 1.3.0: 9.94 MB, npm 12.1.0: 12.4 MB, pnpm11 11.22.0: 38.2 MB, aube 2.6.1: 44.5 MB, pnpm12 12.8.1: 59.8 MB, nub 0.9.5: 60.5 MB, bun 1.4.2: 79.5 MB, deno 2.9.6: 95.6 MB. Size on disk and estimated CI cache restore · smaller is better.</desc>
 <style>
 @media (prefers-color-scheme: dark) {
 [fill="#fcfcfb"] { fill: #16181d } [stroke="#fcfcfb"] { stroke: #16181d }
@@ -42,8 +42,8 @@
 <text x="948.8" y="639" font-size="10" fill="#606974" text-anchor="end" font-weight="400">100 MB</text>
 <text x="16" y="103.5" font-size="13" fill="#20252c" text-anchor="start" font-weight="700">upm</text>
 <g fill="#5fa04e" transform="translate(48.29 92.00) scale(0.4375)"><title>upm: Node</title><path d="M11.691 1.25Q13.856 0 16.021 1.25L25.548 6.75Q27.713 8 27.713 10.5L27.713 21.5Q27.713 24 25.548 25.25L16.021 30.75Q13.856 32 11.691 30.75L2.165 25.25Q0 24 0 21.5L0 10.5Q0 8 2.165 6.75Z"/></g>
-<text x="16" y="116.5" font-size="10" fill="#606974" text-anchor="start" font-weight="400">dist-8da7bb4</text>
-<rect x="120" y="94.5" width="2.55" height="20" rx="2" fill="#1d4f9e"><title>upm dist-8da7bb4: 308 kB on disk, 104 kB packed (~0.6 s CI)</title></rect>
+<text x="16" y="116.5" font-size="10" fill="#606974" text-anchor="start" font-weight="400">dist-10f9faa</text>
+<rect x="120" y="94.5" width="2.55" height="20" rx="2" fill="#1d4f9e"><title>upm dist-10f9faa: 308 kB on disk, 104 kB packed (~0.6 s CI)</title></rect>
 <text x="128.55" y="103.5" font-size="11" fill="#20252c" text-anchor="start" font-weight="700">308 kB · 1×</text>
 <text x="128.55" y="116.5" font-size="10" fill="#606974" text-anchor="start" font-weight="400">104 kB packed (~0.6 s CI)</text>
 <text x="16" y="152.5" font-size="13" fill="#20252c" text-anchor="start" font-weight="600">yarn4</text>
