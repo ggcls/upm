@@ -38,8 +38,8 @@ const measures: {
   {
     icon: '<path d="M12.67 19a2 2 0 0 0 1.416-.588l6.154-6.172a6 6 0 0 0-8.49-8.49L5.586 9.914A2 2 0 0 0 5 11.328V18a1 1 0 0 0 1 1z"/><path d="M16 8 2 22"/><path d="M17.5 15H9"/>',
     color: ["#047857", "#d1fae5"],
-    title: "~256 KB",
-    text: "85 KB packed, 0 deps",
+    title: "Tiny",
+    text: "zero dependencies",
   },
   {
     icon: '<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>',
