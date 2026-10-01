@@ -1,5 +1,7 @@
-// Replacement for `npm-package-arg`: version, range, tag, alias, workspace, link and tarball specs.
+// Replacement for `npm-package-arg`: version, range, tag, alias, workspace, link, tarball and
+// git specs.
 import { parse, validRange } from "./semver.ts";
+import { gitArchive, isGit } from "./util.ts";
 
 export interface Spec {
   raw: string;
@@ -12,8 +14,9 @@ export interface Spec {
   /**
    * `workspace` never asks the registry: `fetchSpec` is the range a workspace's version must
    * satisfy. Nor does `tarball`: `fetchSpec` is its http(s) url as given, or `file:` and a path
-   * relative to the package.json that declares it, `/`-separated and without `.` segments.
-   * Nor does `link`: `fetchSpec` is a directory in that same form, linked as it is.
+   * relative to the package.json that declares it, `/`-separated and without `.` segments. A git
+   * spec on a known host is a `tarball` of the host's archive url for its ref. Nor does `link`:
+   * `fetchSpec` is a directory in that same form, linked as it is.
    */
   type: "version" | "range" | "tag" | "workspace" | "link" | "tarball";
   fetchSpec: string;
@@ -36,6 +39,7 @@ const TARBALL_RE = /\.(?:tgz|tar\.gz|tar)$/i;
  * that reads the tarball can make a spec of it.
  */
 export function bareTarball(arg: string): string | undefined {
+  if (isGit(arg)) return tarball(arg, arg);
   if (URL_RE.test(arg) || /^(?:file:|\.\.?[\\/])/.test(arg)) return tarball(arg, arg);
   if (!arg.includes("@") && TARBALL_RE.test(arg)) return tarball(`file:${arg}`, arg);
   return undefined;
@@ -129,6 +133,13 @@ function build(name: string, spec: string, raw: string, where?: string): Spec {
  * must end as a tarball does, since a directory is a workspace's job.
  */
 function tarball(s: string, raw: string, where?: string): string | undefined {
+  if (isGit(s)) {
+    try {
+      return gitArchive(s);
+    } catch (error) {
+      throw fail(`Invalid git spec "${s}" of package "${raw}": ${(error as Error).message}`, where);
+    }
+  }
   if (URL_RE.test(s)) {
     if (!URL.canParse(s)) throw fail(`Invalid url "${s}" of package "${raw}"`, where);
     return s;

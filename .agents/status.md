@@ -67,6 +67,16 @@ compatibility. Keep this page about open work, not completed implementation step
   Checking a url on every install would cost a request and fail offline; the fix is an explicit
   `upm update <name>` that unlocks a name's entries and resolves them again, which registry
   packages want too. Start at `keep` in `src/api.ts`.
+- **Git refs are not resolved to commits:** a git spec becomes its host's archive url for the
+  ref as written (`git` in `src/spec.ts`), so a branch or `HEAD` is the moving url above. Git's
+  smart http route (`info/refs?service=git-upload-pack`) lists every ref's commit in one GET,
+  with no clone; locking the commit's archive would make the bytes stay put. GitHub's archive
+  bytes are not promised stable either. No `prepare` runs, so a repo without built files fails
+  to load; running it needs the package's dev dependencies and a script sandbox decision.
+- **A url override of a package's own dependency fails the link:** `"overrides": { "x": "<url>" }`
+  with `x` declared as `^1` by a dependency resolves, then fails with `EMISMATCH` (`misdeclared`
+  in `src/util.ts` holds the edge to the package.json, which never names the url). A git or url
+  override of a root dependency works. The check needs to know an override moved the edge.
 - **Symlinked workspace:** when a workspace directory is itself a symlink, its dep links
   are spelled relative to the path linked through, not where they sit, so on Linux and
   macOS they dangle. The test pins that spelling. Start at `linkTop` in `src/link.ts`.

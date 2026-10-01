@@ -79,7 +79,7 @@ import { createStore, storeDir } from "./store.ts";
 import type { Store, Tarball } from "./store.ts";
 import type { StoreBackend } from "./store-backend.ts";
 import type { Manifest } from "./types.ts";
-import { describe, replaceFile, take, trace, tracing } from "./util.ts";
+import { describe, isGit, replaceFile, take, trace, tracing } from "./util.ts";
 
 /** Only a type: the module itself is loaded by the commands that read a project. */
 type Workspace = import("./workspaces.ts").Workspace;
@@ -1219,7 +1219,10 @@ async function adding(specs: string[], options: AddOptions): Promise<AddResult> 
             const store = openStore(ctx);
             name = await nameOf(tarballReader(ctx, dir, store), dir, edit.file, raw, fetchSpec);
           }
-          return { name, range: parseDep(name, fetchSpec).fetchSpec, group };
+          // A git spec is saved as typed: its archive url is the lockfile's to keep.
+          const typed = bare[i] === undefined ? spec!.raw.slice(spec!.name.length + 1) : raw;
+          const range = isGit(typed) ? typed.trim() : parseDep(name, fetchSpec).fetchSpec;
+          return { name, range, group };
         }
         const version = local.get(spec.fetchName);
         const found =
