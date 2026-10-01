@@ -1,6 +1,91 @@
 # Changelog
 
 
+## v1.4.0
+
+[compare changes](https://github.com/unjs/upm/compare/v1.3.1...v1.4.0)
+
+### 🚀 Enhancements
+
+- Hash stored and installed files under --verify ([4976b3f](https://github.com/unjs/upm/commit/4976b3f))
+- Warn when a resolved package's engines.node excludes this Node ([665c0c9](https://github.com/unjs/upm/commit/665c0c9))
+- Warn about package.json overrides, resolutions and patches that are not applied ([b0896b0](https://github.com/unjs/upm/commit/b0896b0))
+- **lock:** Warn when a locked tarball url is off the configured registries ([d61d823](https://github.com/unjs/upm/commit/d61d823))
+- **registry:** Warn once when a registry gives no publish dates for the release age ([bae22f4](https://github.com/unjs/upm/commit/bae22f4))
+- Overrides and resolutions ([#22](https://github.com/unjs/upm/pull/22))
+- Support `link:` dependencies ([#25](https://github.com/unjs/upm/pull/25))
+- Install git specs on GitHub, GitLab and Bitbucket from their archive url ([#26](https://github.com/unjs/upm/pull/26))
+
+### 🔥 Performance
+
+- Write an older index's aliases back once a link has read them ([024235b](https://github.com/unjs/upm/commit/024235b))
+- Do not race a scoped pin's document with its version route on slow headers ([b0dc1ba](https://github.com/unjs/upm/commit/b0dc1ba))
+- Read an optional pin from the full packument, with its own cutoff ([a2e7514](https://github.com/unjs/upm/commit/a2e7514))
+- Read an optional pin named for another os from the abbreviated packument ([aaa30c3](https://github.com/unjs/upm/commit/aaa30c3))
+
+### 🩹 Fixes
+
+- Read web streams without async iterator for safari compatibility ([4ef0593](https://github.com/unjs/upm/commit/4ef0593))
+- Refetch damaged cached metadata and write project files atomically ([9bab3c6](https://github.com/unjs/upm/commit/9bab3c6))
+- Treat out-of-range locked versions as stale and keep failed installs from writing the lockfile ([4ad66a5](https://github.com/unjs/upm/commit/4ad66a5))
+- Verify tarball and store identity against the requested package ([b27ccc0](https://github.com/unjs/upm/commit/b27ccc0))
+- Refill the store when a damaged entry's blobs are short too ([4d29805](https://github.com/unjs/upm/commit/4d29805))
+- Follow direct links to their package dirs before calling a tree up to date ([b3b707f](https://github.com/unjs/upm/commit/b3b707f))
+- Link the later of two file names a case-insensitive disk folds together ([6f27459](https://github.com/unjs/upm/commit/6f27459))
+- Fetch a dropped optional again on the next install ([0a54e92](https://github.com/unjs/upm/commit/0a54e92))
+- Download unframed tarball bytes once more on an integrity mismatch ([42b8aa2](https://github.com/unjs/upm/commit/42b8aa2))
+- Let one install at a time relink a tree ([5a747d2](https://github.com/unjs/upm/commit/5a747d2))
+- Give the tree lock up when a signal ends the install ([03f0d13](https://github.com/unjs/upm/commit/03f0d13))
+- Take the tree lock over at once from a holder that died on this boot and pid namespace ([ac8abba](https://github.com/unjs/upm/commit/ac8abba))
+- Keep concurrent add and install from recording each other's files ([bc78eba](https://github.com/unjs/upm/commit/bc78eba))
+- Hold the tree lock under a `process` with no events, as the web shim's ([96cd547](https://github.com/unjs/upm/commit/96cd547))
+- **web:** Give the shim's fs an unlink for the tree lock ([4e4a148](https://github.com/unjs/upm/commit/4e4a148))
+- Wait out a lock file windows is still deleting ([f72339b](https://github.com/unjs/upm/commit/f72339b))
+- Record alias names in upm.lock and bind each tarball to what its dependents declare ([f1a69b3](https://github.com/unjs/upm/commit/f1a69b3))
+- Let one waiter take over a dead tree lock, and tell a dead holder at once on macOS and Windows ([f2dbcd9](https://github.com/unjs/upm/commit/f2dbcd9))
+- Accept a case-folded name that opens the file the linker kept in entry checks ([72d663b](https://github.com/unjs/upm/commit/72d663b))
+- Take a url tarball's bytes from the store only once they came from that url ([b568a66](https://github.com/unjs/upm/commit/b568a66))
+- Trust a local tarball's stamp only for the integrity it was checked against ([7c007bf](https://github.com/unjs/upm/commit/7c007bf))
+- Take a peer on an alias or a tarball only where its dependent's package.json declares it ([c08870b](https://github.com/unjs/upm/commit/c08870b))
+- Warn about locked versions published after the release cutoff ([1385dfd](https://github.com/unjs/upm/commit/1385dfd))
+- Hold each edge of a top to its package.json, under any name and in both maps ([1834623](https://github.com/unjs/upm/commit/1834623))
+- Read a dependency named as a property every object has as any other ([6b9b7a3](https://github.com/unjs/upm/commit/6b9b7a3))
+- Hold the root pins of other lockfiles to package.json ([5bbe0db](https://github.com/unjs/upm/commit/5bbe0db))
+- Hold a registry package locked off its registries to the registry's integrity ([fb40df5](https://github.com/unjs/upm/commit/fb40df5))
+- Hold a locked url on the registry to the package and version its path names ([8da7bb4](https://github.com/unjs/upm/commit/8da7bb4))
+- Normalize CRLF shebangs when unpacking bins ([#24](https://github.com/unjs/upm/pull/24))
+- Lock a link: to a directory only above the project ([bf9f7c4](https://github.com/unjs/upm/commit/bf9f7c4))
+
+### 💅 Refactors
+
+- Make debuging stacks better ([2e1887a](https://github.com/unjs/upm/commit/2e1887a))
+
+### 🏡 Chore
+
+- Improve website ([0d616d4](https://github.com/unjs/upm/commit/0d616d4))
+- Basic profile script ([14a3bef](https://github.com/unjs/upm/commit/14a3bef))
+- Improve profile script ([e793838](https://github.com/unjs/upm/commit/e793838))
+- Update sizes ([473f9ad](https://github.com/unjs/upm/commit/473f9ad))
+- Update benchs ([10f9faa](https://github.com/unjs/upm/commit/10f9faa))
+- More stable benchmarks with recording ([8401584](https://github.com/unjs/upm/commit/8401584))
+- Improve website ([c02477a](https://github.com/unjs/upm/commit/c02477a))
+- Update benchs ([1a5afee](https://github.com/unjs/upm/commit/1a5afee))
+
+### ✅ Tests
+
+- Skip mode bits and unlock the read-only link on windows ([96ee9cf](https://github.com/unjs/upm/commit/96ee9cf))
+- Probe tar entry names that windows treats specially ([2904ab3](https://github.com/unjs/upm/commit/2904ab3))
+- Wait for the thread's request instead of a fixed delay ([582472b](https://github.com/unjs/upm/commit/582472b))
+- Wait for every thread to settle instead of a fixed delay ([0f1b380](https://github.com/unjs/upm/commit/0f1b380))
+- Gate the prefetch check on the tarball request and widen the slow-thread margins ([84453bd](https://github.com/unjs/upm/commit/84453bd))
+- Take five flaky tests off the real clock and off timing ([6bde7dc](https://github.com/unjs/upm/commit/6bde7dc))
+
+### ❤️ Contributors
+
+- Pooya Parsa <pooya@pi0.io>
+- Pi0x <x@pi0.io>
+- Grégoire Ciles
+
 ## v1.3.1
 
 [compare changes](https://github.com/unjs/upm/compare/v1.3.0...v1.3.1)
