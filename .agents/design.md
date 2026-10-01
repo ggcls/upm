@@ -13,6 +13,15 @@ permission to infer platform restrictions from a package's name.
 Changing mirrors must not change package identity when integrity is unchanged.
 Keep nonstandard tarball URLs intact: only the conventional registry URL is portable
 by derivation. Integrity identifies bytes; a URL identifies where to request them.
+But a lockfile's integrity is the lockfile's word too, so a registry package whose url is not on
+its registry on the installing machine (by host, `onRegistry` in `src/lock.ts`) is held to the
+integrity its scope's registry publishes for that name and version before any byte from there,
+or from the store, is used (`src/mirror.ts`): otherwise that server decides both the bytes and
+the name inside them. npmjs counts only for a name the default registry serves, since a scope
+sent elsewhere may be anyone's there. A kept document answers, so only such entries ever ask, and
+offline without one they are refused. A registry that publishes only a sha1 `shasum` passes
+only a lockfile naming that sha1, which the tarball is then checked against: forging bytes to
+an existing sha1 is a second preimage, which SHA-1 still resists.
 A scope's registry is derived the same way, from the installing machine's `.npmrc`,
 so a private registry serving the conventional url stays out of the lockfile.
 

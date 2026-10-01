@@ -24,6 +24,8 @@ export interface ResolvedPackage {
   version: string;
   /** Both empty for a local entry: a workspace has no tarball. */
   resolved: string;
+  /** From a lockfile whose `resolved` is on no registry in use: see `src/mirror.ts`. */
+  offRegistry?: true;
   integrity: string;
   /**
    * A workspace, at this root-relative `/` path. Linked from its directory, never in `.upm`.

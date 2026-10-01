@@ -151,7 +151,6 @@ export function fromCheckedLockfile(lock: Lockfile, baseFor = npmjs): Resolution
   const shipped = shippedSet(lock);
   const required = requiredSet(lock);
   const packages: Record<string, ResolvedPackage> = {};
-  const elsewhere = new Map<string, string[]>(); // host -> keys fetched from it
   for (const [path, ws] of Object.entries(lock.workspaces ?? {})) {
     // Always linked, so never dev or optional: what a top declares is walked in full.
     packages[keyOf(path, ws)] = {
@@ -181,13 +180,11 @@ export function fromCheckedLockfile(lock: Lockfile, baseFor = npmjs): Resolution
     // A lockfile from before aliases were named says so only in the url. Nothing trusts that:
     // the tarball and the dependents' package.json still have to agree with it.
     const real = source ? name : (entry.name ?? packageOf(entry.resolved, version) ?? name);
-    if (!source && entry.resolved && !onRegistry(entry.resolved, real, baseFor)) {
-      const host = originOf(entry.resolved);
-      elsewhere.set(host, [...(elsewhere.get(host) ?? []), key]);
-    }
+    const elsewhere = !source && !!entry.resolved && !onRegistry(entry.resolved, real, baseFor);
     packages[key] = {
       name,
       ...(real !== name && { fetchName: real }),
+      ...(elsewhere && { offRegistry: true }),
       version,
       resolved: source ?? entry.resolved ?? tarballUrl(baseFor(real), real, version),
       integrity: entry.integrity,
@@ -207,31 +204,22 @@ export function fromCheckedLockfile(lock: Lockfile, baseFor = npmjs): Resolution
       ...(entry.peers && { peers: entry.peers }),
     };
   }
-  const warnings = [...elsewhere].map(
-    ([host, [key, ...more]]) =>
-      `${key}${more.length ? ` and ${more.length} more` : ""} locked to ${host}, not a registry in use`,
-  );
-  return { root: root(lock.root), packages, warnings };
+  return { root: root(lock.root), packages, warnings: [] };
 }
 
 /**
- * Whether a written-down tarball url is on the host of the registry its name is read from, or
- * npmjs, where a mirror's documents often still point. Anywhere else is what an edited lockfile
- * would say: the integrity is the lockfile's too, so it proves nothing about the host. Told,
- * not refused: a registry moved since the lock was made says the same. The host, not the path:
- * GitLab's instance registry sends each project's own. An alias is fetched as the package it
- * names, which only the url tells: from the registry of unscoped names or of a scope in its
- * path (`@std/path: npm:@jsr/std__path`, from JSR's).
+ * Whether a written-down tarball url is on the host of the registry `name` (an alias's package)
+ * is read from, or npmjs, where a mirror's documents often still point. Anywhere else is what an
+ * edited lockfile would say, so the install holds its integrity to the registry's first
+ * (`src/mirror.ts`). The host, not the path: GitLab's instance registry sends each project's
+ * own. npmjs only for a name the default registry serves: a scope sent elsewhere may be anyone's
+ * on npmjs.
  */
 function onRegistry(url: string, name: string, baseFor: BaseFor): boolean {
   const host = (at: string) => /^https?:\/\/([^/?#]*)/i.exec(at)?.[1]!.toLowerCase();
-  let path = url;
-  try {
-    path = decodeURIComponent(url);
-  } catch {}
-  const scopes = path.split("/").filter((part) => part.startsWith("@"));
-  const bases = [name, "-", ...scopes.map((scope) => `${scope}/-`)].map(baseFor);
-  return [...bases, registryBase()].some((at) => host(at) === host(url));
+  const own = baseFor(name);
+  const bases = own === baseFor("-") ? [own, registryBase()] : [own];
+  return bases.some((at) => host(at) === host(url));
 }
 
 /**
@@ -251,15 +239,6 @@ function packageOf(url: string | undefined, version: string): string | undefined
   if (parts[n - 2] === "-" && parts[n - 1] === `${parts[n - 3]}-${version}.tgz`) return at(n - 3);
   const i = parts[n - 1] === `${version}.tgz` ? n - 1 : parts.indexOf(version, 3);
   return i > 2 && parts[i - 2]!.startsWith("@") ? at(i - 1) : undefined;
-}
-
-/** Where a url points, without any credentials in it; the url itself when it has no origin. */
-function originOf(url: string): string {
-  try {
-    return new URL(url).origin;
-  } catch {
-    return url;
-  }
 }
 
 /**

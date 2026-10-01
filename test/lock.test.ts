@@ -17,6 +17,7 @@ import {
   writeLockfile,
 } from "../src/lock.ts";
 import { hosts, registryBase, tarballUrl } from "../src/registry.ts";
+import type { BaseFor } from "../src/registry.ts";
 import type { Lockfile } from "../src/lock.ts";
 import { valuesFor } from "../src/overrides.ts";
 import type { Overrides } from "../src/overrides.ts";
@@ -241,6 +242,7 @@ describe("toLockfile / fromLockfile", () => {
     };
     expect(fromLockfile(lock).packages["a@1.0.0"]).toEqual({
       name: "a",
+      offRegistry: true, // npmjs is not at x
       version: "1.0.0",
       resolved: "https://x/a.tgz",
       integrity: "sha512-aaa",
@@ -447,6 +449,12 @@ describe("resolved urls off the registry", () => {
   const NPM = "https://registry.npmjs.org";
   const MIRROR = "https://npm.corp.internal/api/npm";
 
+  /** The keys a lockfile fetches from a host that is none of its registries'. */
+  const elsewhere = (lock: Lockfile, at: BaseFor) =>
+    Object.entries(fromLockfile(lock, at).packages)
+      .filter(([, pkg]) => pkg.offRegistry)
+      .map(([key]) => key);
+
   /** Each key a direct dependency, fetched from its url. */
   function locked(resolved: Record<string, string>): Lockfile {
     const split = (key: string) => [
@@ -470,19 +478,16 @@ describe("resolved urls off the registry", () => {
     };
   }
 
-  it("says which packages a lockfile fetches from another host, once per host", () => {
+  it("marks the packages a lockfile fetches from another host", () => {
     const lock = locked({
       "a@1.0.0": "https://evil.test/a.tgz",
       "b@1.0.0": "https://evil.test/b.tgz",
       "c@1.0.0": "http://other.test/c.tgz",
     });
-    expect(fromLockfile(lock, hosts(MIRROR)).warnings).toEqual([
-      "a@1.0.0 and 1 more locked to https://evil.test, not a registry in use",
-      "c@1.0.0 locked to http://other.test, not a registry in use",
-    ]);
+    expect(elsewhere(lock, hosts(MIRROR))).toEqual(["a@1.0.0", "b@1.0.0", "c@1.0.0"]);
   });
 
-  it("says nothing of a url under the registry, npmjs, or a scope's registry", () => {
+  it("marks no url under the registry, npmjs, or a scope's registry", () => {
     const acme = "https://npm.acme.test/registry";
     const lock = locked({
       "a@1.0.0": `${MIRROR}/a/-/odd-1.0.0.tgz`,
@@ -491,10 +496,10 @@ describe("resolved urls off the registry", () => {
       // The scheme and the host's case are not a different registry.
       "d@1.0.0": "http://NPM.corp.internal/api/npm/d.tgz",
     });
-    expect(fromLockfile(lock, hosts(MIRROR, { "@acme": acme })).warnings).toEqual([]);
+    expect(elsewhere(lock, hosts(MIRROR, { "@acme": acme }))).toEqual([]);
   });
 
-  it("says nothing of an alias fetched from the registry of the package it names", () => {
+  it("marks no alias fetched from the registry of the package it names", () => {
     const jsr = "https://npm.jsr.io";
     const github = "https://npm.pkg.github.com";
     const lock = locked({
@@ -506,14 +511,12 @@ describe("resolved urls off the registry", () => {
       "@acme/lodash@4.17.21": `${MIRROR}/lodash/-/lodash-4.17.21.tgz`,
     });
     const at = hosts(MIRROR, { "@jsr": jsr, "@owner": github, "@acme": "https://acme.test" });
-    expect(fromLockfile(lock, at).warnings).toEqual([]);
+    expect(elsewhere(lock, at)).toEqual([]);
   });
 
-  it("says a url it cannot read, rather than fail on it", () => {
+  it("marks a url it cannot read, rather than fail on it", () => {
     const lock = locked({ "a@1.0.0": "https://" });
-    expect(fromLockfile(lock, hosts(MIRROR)).warnings).toEqual([
-      "a@1.0.0 locked to https://, not a registry in use",
-    ]);
+    expect(elsewhere(lock, hosts(MIRROR))).toEqual(["a@1.0.0"]);
   });
 
   it("goes by the registry's host, not its path, and not another's", () => {
@@ -522,13 +525,25 @@ describe("resolved urls off the registry", () => {
     const project = locked({
       "@g/a@1.0.0": "https://gitlab.test/api/v4/projects/7/packages/npm/@g/a/-/@g/a-1.0.0.tgz",
     });
-    expect(fromLockfile(project, hosts(MIRROR, { "@g": gitlab })).warnings).toEqual([]);
+    expect(elsewhere(project, hosts(MIRROR, { "@g": gitlab }))).toEqual([]);
     const lock = locked({ "a@1.0.0": "https://npm.corp.internal.test/api/npm/a.tgz" });
-    expect(fromLockfile(lock, hosts(MIRROR)).warnings).toHaveLength(1);
+    expect(elsewhere(lock, hosts(MIRROR))).toHaveLength(1);
     // A scope sent elsewhere does not vouch for an unscoped name.
     const acme = "https://npm.acme.test";
     const other = locked({ "b@1.0.0": `${acme}/b.tgz` });
-    expect(fromLockfile(other, hosts(MIRROR, { "@acme": acme })).warnings).toHaveLength(1);
+    expect(elsewhere(other, hosts(MIRROR, { "@acme": acme }))).toHaveLength(1);
+    // Nor does npmjs, or the default registry, for a scope sent elsewhere: anyone may hold
+    // `@acme` there. Nor another scope's host named in the path.
+    const confused = locked({
+      "@acme/x@1.0.0": `${NPM}/@acme/x/-/x-1.0.0.tgz`,
+      "@acme/y@1.0.0": `${MIRROR}/@acme/y/-/y-1.0.0.tgz`,
+      "c@1.0.0": `${acme}/@acme/../c/-/c-1.0.0.tgz`,
+    });
+    expect(elsewhere(confused, hosts(MIRROR, { "@acme": acme }))).toEqual([
+      "@acme/x@1.0.0",
+      "@acme/y@1.0.0",
+      "c@1.0.0",
+    ]);
   });
 
   it("leaves tarball dependencies alone: their key says where they are", () => {
@@ -540,7 +555,7 @@ describe("resolved urls off the registry", () => {
       },
       packages: { "t@https://files.test/t.tgz": { version: "1.0.0", integrity: "sha512-a" } },
     };
-    expect(fromLockfile(lock, hosts(NPM)).warnings).toEqual([]);
+    expect(elsewhere(lock, hosts(NPM))).toEqual([]);
   });
 });
 

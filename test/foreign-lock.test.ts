@@ -515,6 +515,45 @@ describe("a project another manager locked", () => {
     expect(await exists("node_modules/.bin/tool")).toBe(true);
   });
 
+  it("asks a host off the registry for nothing, bins included, before the registry vouches", async () => {
+    const elsewhere: string[] = [];
+    const other = createServer((request, response) => {
+      elsewhere.push(request.url ?? "");
+      response.writeHead(200);
+      response.end(Buffer.from(tool));
+    });
+    await new Promise<void>((done) => other.listen(0, "127.0.0.1", done));
+    try {
+      const at = `http://127.0.0.1:${(other.address() as AddressInfo).port}/tool.tgz`;
+      const npm = LOCKS["package-lock.json"].replace(
+        "https://registry.npmjs.org/tool/-/tool-1.0.0.tgz",
+        at,
+      );
+      // pnpm names only `hasBin`, so its bins are read out of the tarball before the link.
+      const pnpm = LOCKS["pnpm-lock.yaml"].replace(
+        `{integrity: ${TOOL}}`,
+        `{integrity: ${TOOL}, tarball: '${at}'}`,
+      );
+      for (const [file, text] of [
+        ["package-lock.json", npm],
+        ["pnpm-lock.yaml", pnpm],
+      ] as const) {
+        await rm(join(dir, "package-lock.json"), { force: true });
+        await writeFile(join(dir, "package.json"), JSON.stringify(MANIFEST));
+        await writeFile(join(dir, file), text);
+        // The registry has no document for tool: nothing says those bytes are its.
+        await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({
+          code: "ELOCK",
+          message: expect.stringContaining("tool@1.0.0 is locked to http://127.0.0.1:"),
+        });
+      }
+      expect(elsewhere).toEqual([]);
+      expect(await exists("node_modules/tool")).toBe(false);
+    } finally {
+      await new Promise((done) => other.close(done));
+    }
+  });
+
   it("refuses to resolve once package.json has moved on", async () => {
     await project("pnpm-lock.yaml");
     await upm.install(base);
@@ -748,6 +787,108 @@ ${snapshots}
           code: "EMISMATCH",
           message: expect.stringContaining("its package.json makes pkg-b pkg-b, not evil"),
         });
+      }
+    });
+  }
+
+  // A tarball that calls itself what the lock says, on a host that is not the registry: the
+  // link's name check passes it, so only the registry's integrity can refuse it.
+  const forged = (name: string, version: string) => {
+    const data = makeTarball([
+      { path: "package.json", data: JSON.stringify({ name, version }) },
+      { path: "index.js", data: 'module.exports = "forged";\n' },
+    ]);
+    return { data, integrity: hashOf(data) };
+  };
+  const FA = forged("pkg-a", "1.0.0");
+  const FB = forged("pkg-b", "1.0.0");
+  const elsewhere: [ForeignFile, string, (at: string) => string, string][] = [
+    [
+      "package-lock.json",
+      "pkg-a",
+      (at) =>
+        npm({
+          "node_modules/pkg-a": {
+            version: "1.0.0",
+            resolved: `${at}/a.tgz`,
+            integrity: FA.integrity,
+          },
+        }),
+      "ELOCK",
+    ],
+    [
+      "package-lock.json",
+      "pkg-a's own pkg-b",
+      (at) =>
+        npm({
+          "node_modules/pkg-a": a1(),
+          "node_modules/pkg-b": {
+            version: "1.0.0",
+            resolved: `${at}/b.tgz`,
+            integrity: FB.integrity,
+          },
+        }),
+      "ELOCK",
+    ],
+    [
+      "pnpm-lock.yaml",
+      "pkg-a",
+      (at) =>
+        pnpm(
+          "1.0.0",
+          `  pkg-a@1.0.0: {resolution: {integrity: ${FA.integrity}, tarball: '${at}/a.tgz'}}`,
+          "  pkg-a@1.0.0: {}",
+        ),
+      "ELOCK",
+    ],
+    [
+      "pnpm-lock.yaml",
+      "pkg-a's own pkg-b",
+      (at) =>
+        pnpm(
+          "1.1.0",
+          `  pkg-a@1.1.0: {resolution: {integrity: ${A1.integrity}}}\n  pkg-b@1.0.0: {resolution: {integrity: ${FB.integrity}, tarball: '${at}/b.tgz'}}`,
+          "  pkg-a@1.1.0:\n    dependencies:\n      pkg-b: 1.0.0\n  pkg-b@1.0.0: {}",
+        ),
+      "ELOCK",
+    ],
+    // bun names a registry, never a tarball: the url is the installing machine's registry's.
+    [
+      "bun.lock",
+      "pkg-a",
+      (at) => bun({ "pkg-a": ["pkg-a@1.0.0", `${at}/`, {}, FA.integrity] }),
+      "E404",
+    ],
+    [
+      "bun.lock",
+      "pkg-a's own pkg-b",
+      (at) =>
+        bun({
+          "pkg-a": ["pkg-a@1.1.0", "", { dependencies: nested }, A1.integrity],
+          "pkg-b": ["pkg-b@1.0.0", `${at}/`, {}, FB.integrity],
+        }),
+      "EINTEGRITY",
+    ],
+  ];
+  for (const [file, what, text, code] of elsewhere) {
+    it(`refuses ${file} fetching ${what} from another host by the lock's integrity`, async () => {
+      const asked: string[] = [];
+      const other = createServer((request, response) => {
+        asked.push(request.url ?? "");
+        response.writeHead(200);
+        response.end(Buffer.from(request.url === "/a.tgz" ? FA.data : FB.data));
+      });
+      await new Promise<void>((done) => other.listen(0, "127.0.0.1", done));
+      try {
+        const at = `http://127.0.0.1:${(other.address() as AddressInfo).port}`;
+        await install(file, text(at), DEPS);
+        for (const options of [base, { ...base, frozen: true }]) {
+          await expect(upm.install(options)).rejects.toMatchObject({ code });
+        }
+        expect(asked).toEqual([]);
+        expect(await which("pkg-a")).toBeUndefined();
+      } finally {
+        await new Promise((done) => other.close(done));
       }
     });
   }

@@ -1,5 +1,6 @@
 // The commands as functions, against a local registry: every CLI command has one.
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import {
   chmod,
@@ -555,31 +556,174 @@ describe("api", () => {
     expect((await upm.install(base)).upToDate).toBe(true);
   });
 
-  it("says so when the lockfile fetches a package from another host, up to date or not", async () => {
-    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^5" } }));
-    await upm.install(base);
-    // Its own registry's url is never told, written down or not.
-    expect(lines.filter((line) => line.includes("not a registry"))).toEqual([]);
-    const file = join(dir, "upm.lock");
-    const lock = await readJson(file);
-    lock.packages["nanoid@5.0.0"].resolved = `${registry()}/nanoid/-/odd-5.0.0.tgz`;
-    await writeFile(file, JSON.stringify(lock));
-    await upm.install({ ...base, frozen: true, offline: true });
-    expect(lines.filter((line) => line.includes("not a registry"))).toEqual([]);
-    lock.packages["nanoid@5.0.0"].resolved = "https://evil.test/nanoid.tgz";
-    await writeFile(file, JSON.stringify(lock));
-    await rm(join(dir, "node_modules"), { recursive: true });
-    const told = "nanoid@5.0.0 locked to https://evil.test, not a registry in use";
-    // The store holds it by integrity, so nothing is asked: frozen and offline both install.
-    lines = [];
-    await upm.install({ ...base, frozen: true, offline: true });
-    expect(lines).toContain(told);
-    // Up to date, it is still said: the warning is kept with the tree.
-    lines = [];
-    expect(await upm.install({ ...base, frozen: true, offline: true })).toMatchObject({
-      upToDate: true,
+  describe("a registry package locked to another host", () => {
+    let other: Server;
+    /** What the other host serves, by path, and each path it was asked for. */
+    let at: Record<string, Uint8Array>;
+    let asked: string[];
+    beforeEach(async () => {
+      at = {};
+      asked = [];
+      other = createServer((request, response) => {
+        const url = request.url ?? "";
+        asked.push(url);
+        const found = Object.hasOwn(at, url) ? at[url] : undefined;
+        response.writeHead(found ? 200 : 404, { "content-type": "application/octet-stream" });
+        response.end(found ? Buffer.from(found) : undefined);
+      });
+      await new Promise<void>((done) => other.listen(0, "127.0.0.1", done));
     });
-    expect(lines).toContain(told);
+    afterEach(() => new Promise((done) => other.close(done)));
+    /** Another port is another host: the registry's url never matches it. */
+    const host = () => `http://127.0.0.1:${(other.address() as AddressInfo).port}`;
+    const evil = makeTarball([{ path: "index.js", data: 'module.exports = "evil";\n' }]);
+    const lockFile = () => join(dir, "upm.lock");
+    const index = () => join(dir, "node_modules", "nanoid", "index.js");
+
+    /** nanoid installed from the registry, then its lock entry moved to `url` and `integrity`. */
+    async function relock(key: string, url: string, integrity: string) {
+      const lock = await readJson(lockFile());
+      lock.packages[key] = { ...lock.packages[key], resolved: url, integrity };
+      await writeFile(lockFile(), JSON.stringify(lock));
+      await rm(join(dir, "node_modules"), { recursive: true, force: true });
+    }
+
+    beforeEach(async () => {
+      await writeFile(join(dir, "package.json"), '{"dependencies":{"nanoid":"^5"}}');
+    });
+
+    it("is refused when its integrity is not the registry's, frozen or not", async () => {
+      await upm.install(base);
+      at["/nanoid.tgz"] = evil;
+      await relock("nanoid@5.0.0", `${host()}/nanoid.tgz`, hashOf(evil));
+      lines = [];
+      const refused = { code: "ELOCK", message: expect.stringContaining("not the one at") };
+      await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject(refused);
+      await expect(upm.install(base)).rejects.toMatchObject(refused);
+      await expect(upm.fetchLockfile(base)).rejects.toMatchObject(refused);
+      // A stale lockfile replays the entry in the walk: its prefetch must not ask either.
+      const manifest = {
+        dependencies: { nanoid: "^5" },
+        devDependencies: { nanoid2: "npm:nanoid@^5" },
+      };
+      await writeFile(join(dir, "package.json"), JSON.stringify(manifest));
+      await expect(upm.install(base)).rejects.toMatchObject(refused);
+      expect(asked).toEqual([]);
+      await expect(stat(index())).rejects.toThrow();
+    });
+
+    it("is refused when the store already holds those bytes", async () => {
+      await upm.install(base);
+      at["/nanoid.tgz"] = evil;
+      const store = createStore({ dir: base.store });
+      const { integrity } = await store.adopt(`${host()}/nanoid.tgz`);
+      await store.flush();
+      store.close();
+      await relock("nanoid@5.0.0", `${host()}/nanoid.tgz`, integrity);
+      asked = [];
+      // Offline: no byte could be fetched, and nanoid's kept document says what it should be.
+      const offline = { ...base, frozen: true, offline: true };
+      await expect(upm.install(offline)).rejects.toMatchObject({ code: "ELOCK" });
+      await expect(upm.install({ ...base, frozen: true })).rejects.toMatchObject({ code: "ELOCK" });
+      expect(asked).toEqual([]);
+      await expect(stat(index())).rejects.toThrow();
+    });
+
+    it("installs from a mirror that serves the registry's bytes, offline only from kept documents", async () => {
+      await upm.install(base);
+      const good = hashOf(tarball);
+      at["/mirror/nanoid-5.0.0.tgz"] = tarball;
+      await relock("nanoid@5.0.0", `${host()}/mirror/nanoid-5.0.0.tgz`, good);
+      const fresh = { ...base, store: join(dir, "fresh"), frozen: true };
+      expect(await upm.install(fresh)).toMatchObject({ packages: 1, upToDate: false });
+      expect(asked).toEqual(["/mirror/nanoid-5.0.0.tgz"]);
+      expect(await readFile(index(), "utf8")).toContain("nanoid");
+      // Offline, the kept document answers.
+      await rm(join(dir, "node_modules"), { recursive: true });
+      expect(await upm.install({ ...fresh, offline: true })).toMatchObject({ packages: 1 });
+      // Without it, the bytes in the store are not enough: nothing says they are the registry's.
+      await rm(join(dir, "node_modules"), { recursive: true });
+      await rm(join(fresh.store, "metadata"), { recursive: true });
+      await expect(upm.install({ ...fresh, offline: true })).rejects.toMatchObject({
+        code: "EOFFLINE",
+        message: expect.stringContaining("locked to"),
+      });
+      await expect(stat(index())).rejects.toThrow();
+    });
+
+    it("is held to the registry its scope is read from", async () => {
+      const name = "@acme/pkg";
+      const scoped = `${registry()}/acme`;
+      const own = makeTarball([{ path: "index.js", data: 'module.exports = "acme";\n' }]);
+      const packument = (data: Uint8Array, base: string) => ({
+        name,
+        "dist-tags": { latest: "1.0.0" },
+        versions: {
+          "1.0.0": {
+            name,
+            version: "1.0.0",
+            dist: { tarball: `${base}/${name}/-/pkg-1.0.0.tgz`, integrity: hashOf(data) },
+          },
+        },
+      });
+      docs["/acme/@acme%2fpkg"] = packument(own, scoped);
+      files["/acme/@acme/pkg/-/pkg-1.0.0.tgz"] = own;
+      // The default registry has another tarball under the name: it must not be the one asked.
+      docs["/@acme%2fpkg"] = packument(evil, registry());
+      await writeFile(join(dir, ".npmrc"), `@acme:registry=${scoped}/\n`);
+      await writeFile(
+        join(dir, "package.json"),
+        JSON.stringify({ dependencies: { [name]: "^1" } }),
+      );
+      await upm.install(base);
+      at["/evil.tgz"] = evil;
+      at["/own.tgz"] = own;
+      const fresh = { ...base, store: join(dir, "fresh"), frozen: true };
+      await relock(`${name}@1.0.0`, `${host()}/evil.tgz`, hashOf(evil));
+      await expect(upm.install(fresh)).rejects.toMatchObject({ code: "ELOCK" });
+      await relock(`${name}@1.0.0`, `${host()}/own.tgz`, hashOf(own));
+      expect(await upm.install(fresh)).toMatchObject({ packages: 1 });
+      expect(asked).toEqual(["/own.tgz"]);
+      const installed = join(dir, "node_modules", "@acme", "pkg", "index.js");
+      expect(await readFile(installed, "utf8")).toContain("acme");
+      // Without the scope's registry, nothing vouches for it.
+      delete docs["/@acme%2fpkg"];
+      await rm(join(dir, ".npmrc"));
+      await rm(join(dir, "node_modules"), { recursive: true });
+      await expect(upm.install(fresh)).rejects.toMatchObject({
+        code: "ELOCK",
+        message: expect.stringContaining("name its registry in .npmrc"),
+      });
+    });
+
+    it("takes a sha1 only where the registry publishes nothing stronger", async () => {
+      const old = makeTarball([{ path: "index.js", data: 'module.exports = "old";\n' }]);
+      const shasum = createHash("sha1").update(old).digest("hex");
+      const dist = { tarball: `${registry()}/old/-/old-1.0.0.tgz`, shasum };
+      const versions = { "1.0.0": { name: "old", version: "1.0.0", dist } };
+      docs["/old"] = { name: "old", "dist-tags": { latest: "1.0.0" }, versions };
+      files["/old/-/old-1.0.0.tgz"] = old;
+      at["/old.tgz"] = old;
+      await writeFile(join(dir, "package.json"), '{"dependencies":{"old":"^1"}}');
+      await upm.install(base);
+      const sha1 = (await readJson(lockFile())).packages["old@1.0.0"].integrity;
+      expect(sha1).toMatch(/^sha1-/);
+      const fresh = { ...base, store: join(dir, "fresh"), frozen: true };
+      // The same bytes by a hash the registry never published: nothing to hold it to.
+      await relock("old@1.0.0", `${host()}/old.tgz`, hashOf(old));
+      await expect(upm.install(fresh)).rejects.toMatchObject({ code: "ELOCK" });
+      await relock("old@1.0.0", `${host()}/old.tgz`, sha1);
+      expect(await upm.install(fresh)).toMatchObject({ packages: 1 });
+      expect(asked).toEqual(["/old.tgz"]);
+    });
+
+    it("asks nothing for a url on its registry's host", async () => {
+      await upm.install(base);
+      await relock("nanoid@5.0.0", `${registry()}/nanoid/-/nanoid-5.0.0.tgz?odd`, hashOf(tarball));
+      await rm(join(base.store!, "metadata"), { recursive: true });
+      await upm.install({ ...base, frozen: true, offline: true });
+      expect(await readFile(index(), "utf8")).toContain("nanoid");
+    });
   });
 
   it("warns once when the registry gives no publish dates for the release age", async () => {

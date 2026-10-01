@@ -1231,10 +1231,11 @@ describe("startup budget", () => {
     // 163,321 with a top's own local tarball read from it unless a rule matched its edge.
     // 163,432 with a workspace's two edge maps each held to its ranges, `--help` within noise
     // (44.7/45.6 and 42.8/41 ms). 163,525 with a name every object has read as any other.
+    // 163,426 with a lockfile's urls off its registries held to the registry's integrity, lazily.
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(163_525);
+    expect(bytes).toBeLessThanOrEqual(163_426);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
@@ -1249,6 +1250,7 @@ describe("startup budget", () => {
       "verify.ts",
       "tree-lock.ts",
       "vouch.ts",
+      "mirror.ts",
       "index-upgrade.ts",
       "newer.ts",
       "overrides.ts",

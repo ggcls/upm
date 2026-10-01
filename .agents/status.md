@@ -142,11 +142,6 @@ These need a scope decision, not just a patch:
   registries with different credentials share a host, the first covers paths outside both,
   where npm goes by the package's scope. A cross-origin redirect
   drops it, which is Node's fetch behavior and what `test/config.test.ts` pins.
-- A lockfile `resolved` url on a host that is neither a configured registry's nor npmjs's is
-  warned about, not refused: a registry moved since the lock was made looks the same. It goes
-  by host, since GitLab's instance registry points into each project's path. Refusing it under
-  `--frozen` is the next step if mirrors that point elsewhere prove rare
-  (`onRegistry` in `src/lock.ts`).
 - The release age (default one day) filters fresh picks through the registry's view only:
   exact versions, locked ones and libc reads are never held back, since a package's exact pins
   are older than the package. A name whose abbreviated document changed after the cutoff costs
@@ -157,12 +152,12 @@ These need a scope decision, not just a patch:
   `last-modified` it is served with (`src/newer.ts`), and only warned about: one already in the
   store is not checked, and a server that copied a tarball since can flag an old one: npmjs
   itself serves a later date for batches of old tarballs it has copied again, a mirror for
-  each copy. A lock edited to point `resolved` at a server of its own (told as off its
-  registries) can say anything. Its exempt exact pins are guessed from the tree: one only
-  newer packages depend on is passed, even under a parent the cutoff passes (an exact pin or
-  an excluded name) whose range would have taken an older one. Checking every locked version
-  would need its date from the full document, a request per name. Start at `loadAged` in
-  `src/registry.ts`.
+  each copy. A lock pointing `resolved` off its registries is held to the registry's integrity,
+  not its dates: that server's `last-modified` can say anything. Its exempt exact pins are
+  guessed from the tree: one only newer packages depend on is passed, even under a parent the
+  cutoff passes (an exact pin or an excluded name) whose range would have taken an older one.
+  Checking every locked version would need its date from the full document, a request per
+  name. Start at `loadAged` in `src/registry.ts`.
 - Overrides (`readOverrides` in `src/overrides.ts`) change every edge, a top's included, and
   installed packages' peer ranges. A rule scoped to a parent reaches that parent's own edges only;
   deeper nesting is warned about and skipped, since a `name@version` has one set of edges. It

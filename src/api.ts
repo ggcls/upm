@@ -637,6 +637,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
   const wanted = Object.values(resolution.packages).filter(
     (pkg) => pkg.local === undefined && !(options.production && pkg.dev),
   );
+  await vouchMirrors(ctx, wanted);
   if (ctx.binless?.length) {
     const binless = new Set(ctx.binless);
     const { readBins } = await import("./foreign-lock.ts");
@@ -1038,7 +1039,9 @@ function prefetch(
         }
         picked?.();
         const at = tarballOf(dir, pkg.resolved, pkg.source);
-        store.add(at, pkg.integrity, pkg.source !== undefined).catch(() => {});
+        // Not yet held to its registry's integrity: the fill fetches it once it is.
+        if (!pkg.offRegistry)
+          store.add(at, pkg.integrity, pkg.source !== undefined).catch(() => {});
         return false;
       })(),
     );
@@ -1713,6 +1716,7 @@ export async function fetchLockfile(options: FetchLockfileOptions = {}): Promise
   const wanted = Object.values(resolution.packages).filter(
     (pkg) => pkg.local === undefined && !(options.production && pkg.dev),
   );
+  await vouchMirrors(ctx, wanted);
   // A flat loop over the lockfile: no packuments, no version picking, no semver.
   const results = await Promise.all(
     wanted.map(async (pkg) => {
@@ -2188,6 +2192,14 @@ function tarballReader(
 function tarballOf(dir: string, resolved: string, source?: string): Tarball {
   if (!source?.startsWith("file:")) return resolved;
   return { path: builtin.path.resolve(dir, source.slice("file:".length)) };
+}
+
+/** Held to their registry's integrity before any byte is used: `vouch` in `src/mirror.ts`. */
+async function vouchMirrors(ctx: Context, wanted: ResolvedPackage[]): Promise<void> {
+  const elsewhere = wanted.filter((pkg) => pkg.offRegistry);
+  if (!elsewhere[0]) return;
+  const { vouch } = await import("./mirror.ts");
+  await vouch(elsewhere, (n) => openRegistry(ctx, ctx.resolvePool, n), settings(ctx).offline);
 }
 
 /** Whether the store holds a package's tarball: a url dependency's only as fetched from there. */
