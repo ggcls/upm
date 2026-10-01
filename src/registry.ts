@@ -789,7 +789,7 @@ function versionsOf(index?: VersionIndex): string[] | undefined {
 }
 
 /** Whether a name matches one of the names or globs: `**` any text, `*` and `?` within a segment. */
-function globs(patterns: string[]): (name: string) => boolean {
+export function globs(patterns: string[]): (name: string) => boolean {
   if (patterns.length === 0) return () => false;
   const source = patterns.map((p) =>
     p.replace(/\*\*|[*?]|[.+^${}()|[\]\\/]/g, (c) =>

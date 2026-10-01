@@ -1225,10 +1225,12 @@ describe("startup budget", () => {
     // within noise (66/63 and 138/135 ms). 160,837 with a peer on what a dependency's own alias
     // installs, the graph walk lazy, `--help` within noise (40.5/40.5 ms). 161,030 with an older
     // index's aliases written back once read, `--help` within noise (41/41 and 110/108 ms).
+    // 161,302 with a downloaded tarball's last-modified held to the release cutoff, `--help`
+    // within noise (46/42 and 116/114 ms).
     const modules = await reachable();
     const bytes = [...modules.values()].reduce((total, size) => total + size, 0);
     expect(modules.size).toBeLessThanOrEqual(27); // `upm.ts` is the bin, `cli.ts` the program
-    expect(bytes).toBeLessThanOrEqual(161_040);
+    expect(bytes).toBeLessThanOrEqual(161_310);
     // Found through `import()` by the commands that read a project, like the pools: each holds
     // its worker's whole code in the build.
     const lazy = [
@@ -1244,6 +1246,7 @@ describe("startup budget", () => {
       "tree-lock.ts",
       "vouch.ts",
       "index-upgrade.ts",
+      "newer.ts",
     ];
     for (const name of lazy) {
       expect(modules.has(name)).toBe(false);

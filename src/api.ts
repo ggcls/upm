@@ -453,6 +453,10 @@ interface Context {
   noThreads: () => void;
   /** The resolve's registry, opened before the workspaces are read (`openEarly`). */
   early?: Promise<OpenRegistry>;
+  /** Tarballs downloaded that their registry served as last modified after the release cutoff. */
+  newer?: Map<string, number>;
+  /** What this command's resolve kept its versions from: none of its own picks are there. */
+  prior?: Lockfile["packages"];
 }
 
 /** The options checked, before anything is read. */
@@ -769,6 +773,7 @@ async function installed(ctx: Context, edit?: Edit, loaded?: Project): Promise<I
     .finally(() => release?.());
   await filling;
   await store.flush();
+  if (ctx.newer) (await import("./newer.ts")).warnNewer(ctx, ctx.newer, project, resolution);
   await keepTreeLock(ctx, dir, linked.upToDate, inputs);
   trace("linked");
   const { entries, linked: links, copied, reused, repaired, pooled, bins, removed } = linked;
@@ -1587,6 +1592,7 @@ async function resolveLock(
   }
   for (const warning of resolution.warnings) log(warning, "warn");
   const lock = toLockfile(resolution, registry.baseFor);
+  ctx.prior = existing?.packages ?? {};
   const wrote = formatLockfile(lock);
   if (existing && wrote === formatLockfile(existing)) {
     if (dedupe) log("nothing to dedupe", "info");
@@ -1896,13 +1902,26 @@ function settings(ctx: Context): Config {
 
 /** The store, downloading with the config's credentials, or never under `offline`. */
 function openStore(ctx: Context, verify?: boolean): Store {
-  const { auth, offline } = settings(ctx);
+  const { auth, offline, before } = settings(ctx);
   const { store: dir, storeBackend: backend } = ctx.options;
   const backendFailed = (error: unknown) => ctx.log(`store backend: ${describe(error)}`, "warn");
   const { noThreads } = ctx;
   // `--verify` hashes what it checks; a refill after a failed link trusts untouched times.
   const { verify: rehash } = ctx.options;
-  return createStore({ dir, verify, rehash, auth, offline, backend, backendFailed, noThreads });
+  // Only what is newer than the release cutoff, for `warnNewer`; with no cutoff, nothing.
+  const served = (integrity: string, at: number) =>
+    at > before! && (ctx.newer ??= new Map()).set(integrity, at);
+  return createStore({
+    dir,
+    verify,
+    rehash,
+    auth,
+    offline,
+    backend,
+    backendFailed,
+    noThreads,
+    served,
+  });
 }
 
 /** Where each name's tarball is, for a lockfile that does not say. */

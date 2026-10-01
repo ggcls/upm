@@ -152,9 +152,16 @@ These need a scope decision, not just a patch:
   a full-document read for its `time`; a registry that leaves `modified` out of that document
   costs one per fresh pick. Exclude globs know `*`, `**` and `?`, not minimatch's classes and
   braces. A registry that gives no publish dates holds nothing back, said once per registry
-  (`undated`). Locked versions are not checked: that needs their dates, and a kept document
-  rarely has them, so a lockfile edit can pin a version the cutoff would hide.
-  Start at `loadAged` in `src/registry.ts`.
+  (`undated`). A locked version is checked only as its tarball downloads, by the
+  `last-modified` it is served with (`src/newer.ts`), and only warned about: one already in the
+  store is not checked, and a server that copied a tarball since can flag an old one: npmjs
+  itself serves a later date for batches of old tarballs it has copied again, a mirror for
+  each copy. A lock edited to point `resolved` at a server of its own (told as off its
+  registries) can say anything. Its exempt exact pins are guessed from the tree: one only
+  newer packages depend on is passed, even under a parent the cutoff passes (an exact pin or
+  an excluded name) whose range would have taken an older one. Checking every locked version
+  would need its date from the full document, a request per name. Start at `loadAged` in
+  `src/registry.ts`.
 - No separate copies of a consumer for different peer environments. Different
   consumers can have different peer versions, but an own dependency can still conflict
   with that consumer's peer range. `--verify` reports such conflicts; it cannot fix them.

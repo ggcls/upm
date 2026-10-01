@@ -26,6 +26,7 @@ import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { builtin } from "../src/builtin.ts";
 import * as upm from "../src/index.ts";
+import { warnNewer } from "../src/newer.ts";
 import { parseLockfile } from "../src/resolver.ts";
 import { stampOf } from "../src/state.ts";
 import { createStore } from "../src/store.ts";
@@ -46,6 +47,8 @@ let served: string[];
 let docs: Record<string, object>;
 /** Paths answered 429 with a short Retry-After, as a registry too busy for them. */
 let busy: Set<string>;
+/** The `last-modified` every tarball is served with, or each by its path, when set. */
+let lastModified: string | ((url: string) => string) | undefined;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "upm-api-"));
@@ -54,8 +57,11 @@ beforeEach(async () => {
   served = [];
   docs = {};
   busy = new Set();
+  lastModified = undefined;
   server = createServer((request, response) => {
     const url = request.url ?? "";
+    const at = typeof lastModified === "function" ? lastModified(url) : lastModified;
+    const dated = at ? { "last-modified": at } : {};
     if (Object.hasOwn(docs, url)) {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(docs[url]));
@@ -69,12 +75,12 @@ beforeEach(async () => {
     }
     if (Object.hasOwn(files, url)) {
       served.push(url);
-      response.writeHead(200, { "content-type": "application/octet-stream" });
+      response.writeHead(200, { "content-type": "application/octet-stream", ...dated });
       response.end(Buffer.from(files[url]!));
       return;
     }
     if (url === "/nanoid/-/nanoid-5.0.0.tgz") {
-      response.writeHead(200, { "content-type": "application/octet-stream" });
+      response.writeHead(200, { "content-type": "application/octet-stream", ...dated });
       response.end(Buffer.from(tarball));
       return;
     }
@@ -2231,5 +2237,124 @@ describe("the order a store is filled in", () => {
     const order = nearestFirst(resolution, wanted).map((each) => each.name);
     // Key order would have been a-leaf, b-mid, stray, y-ws-dep, z-top.
     expect(order).toEqual(["z-top", "y-ws-dep", "b-mid", "a-leaf", "stray"]);
+  });
+});
+
+describe("a locked version newer than the release cutoff", () => {
+  const said = (text: string) => lines.filter((line) => line.includes(text));
+  const cold = async () => {
+    await rm(join(dir, "node_modules"), { recursive: true, force: true });
+    await rm(join(dir, "store"), { recursive: true, force: true });
+    lines.length = 0;
+  };
+
+  it("is told by its tarball's last-modified, never for a version the resolve picked", async () => {
+    const options = { ...base, minReleaseAge: 1 };
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^5" } }));
+    lastModified = new Date().toUTCString();
+    // The registry gives no dates, so the pick takes it: the resolve saw it, and says so itself.
+    await upm.install(options);
+    expect(said("release cutoff, as")).toEqual([]);
+
+    // The lockfile's word alone, as from a machine without the cutoff.
+    await cold();
+    await upm.install({ ...options, frozen: true });
+    expect(said("release cutoff, as")).toEqual([
+      expect.stringMatching(/^locked versions published after .*: nanoid@5\.0\.0 \(20/),
+    ]);
+    // In the store already, it is not downloaded, so nothing is said.
+    await rm(join(dir, "node_modules"), { recursive: true, force: true });
+    lines.length = 0;
+    await upm.install({ ...options, frozen: true });
+    expect(said("release cutoff, as")).toEqual([]);
+
+    // Nor when the lockfile came through a non-frozen install that took it as it was.
+    await cold();
+    await upm.install(options);
+    expect(said("release cutoff, as")).toHaveLength(1);
+  });
+
+  it("is not told for what only newer packages depend on, as a platform build", async () => {
+    const tgz = makeTarball([
+      { path: "package.json", data: JSON.stringify({ name: "host", version: "1.0.0" }) },
+    ]);
+    files["/host/-/host-1.0.0.tgz"] = tgz;
+    const manifest = {
+      name: "host",
+      version: "1.0.0",
+      dependencies: { nanoid: "5.0.0" },
+      dist: { tarball: `${registry()}/host/-/host-1.0.0.tgz`, integrity: hashOf(tgz) },
+    };
+    docs["/host"] = {
+      name: "host",
+      "dist-tags": { latest: "1.0.0" },
+      versions: { "1.0.0": manifest },
+    };
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { host: "^1" } }));
+    await upm.install(base);
+    lastModified = new Date().toUTCString();
+    await cold();
+    await upm.install({ ...base, minReleaseAge: 1, frozen: true });
+    expect(said("release cutoff, as")).toEqual([expect.stringMatching(/: host@1\.0\.0 \([^,]*$/)]);
+    await cold();
+    await upm.install({ ...base, minReleaseAge: 1, minReleaseAgeExclude: ["host"], frozen: true });
+    expect(said("release cutoff, as")).toEqual([]);
+    // An older package asks for it, so its pin does not explain it.
+    const old = new Date(Date.now() - 2 * 86_400_000).toUTCString();
+    lastModified = (url) => (url.startsWith("/host/") ? old : new Date().toUTCString());
+    await cold();
+    await upm.install({ ...base, minReleaseAge: 1, frozen: true });
+    expect(said("release cutoff, as")).toEqual([
+      expect.stringMatching(/: nanoid@5\.0\.0 \([^,]*$/),
+    ]);
+  });
+
+  it("is not told when it is older, excluded, pinned exactly or the cutoff is off", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { nanoid: "^5" } }));
+    await upm.install(base);
+    const frozen = async (options: upm.InstallOptions) => {
+      await cold();
+      await upm.install({ ...base, minReleaseAge: 1, ...options, frozen: true });
+      return said("release cutoff, as");
+    };
+    lastModified = new Date(Date.now() - 2 * 86_400_000).toUTCString();
+    expect(await frozen({})).toEqual([]);
+    lastModified = new Date().toUTCString();
+    expect(await frozen({})).toHaveLength(1);
+    expect(await frozen({ minReleaseAge: 0 })).toEqual([]);
+    expect(await frozen({ minReleaseAgeExclude: ["nano*"] })).toEqual([]);
+    await writeFile(
+      join(dir, "package.json"),
+      JSON.stringify({ dependencies: { nanoid: "5.0.0" } }),
+    );
+    await upm.install(base);
+    expect(await frozen({})).toEqual([]);
+  });
+
+  it("names ten of a long list and counts the rest", () => {
+    const packages = Object.fromEntries(
+      Array.from({ length: 12 }, (_, i) => [
+        `p${i}@1.0.0`,
+        { name: `p${i}`, version: "1.0.0", resolved: "", integrity: `sha512-${i}`, bin: {} },
+      ]),
+    );
+    const deps = Object.fromEntries(Object.values(packages).map((p) => [p.name, "1.0.0"]));
+    const newer = new Map(Object.values(packages).map((p) => [p.integrity, 0]));
+    const told: string[] = [];
+    const resolution = {
+      root: { dependencies: deps },
+      packages: Object.fromEntries(
+        Object.entries(packages).map(([key, p]) => [
+          key,
+          { ...p, dependencies: {}, optional: false, dev: false },
+        ]),
+      ),
+      warnings: [],
+    };
+    const project = { manifest: {}, workspaces: [] };
+    warnNewer({ log: (line) => told.push(line) }, newer, project, resolution);
+    expect(told).toEqual([
+      expect.stringMatching(/: p0@1\.0\.0 .* p9@1\.0\.0 \([^,]*\) and 2 more \(/),
+    ]);
   });
 });

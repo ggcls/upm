@@ -72,6 +72,53 @@ describe("createStore", () => {
     expect(createStore({ dir }).indexSize(integrity)).toBe(0);
   });
 
+  it("tells a downloaded tarball's last-modified, only once its integrity has passed", async () => {
+    const tarball = makeTarball([{ path: "a.js", data: "alpha" }]);
+    const other = makeTarball([{ path: "a.js", data: "other" }]);
+    const date = "Thu, 01 Oct 2026 08:00:00 GMT";
+    const fetch: typeof globalThis.fetch = async (input) => {
+      const url = String(input);
+      const headers: Record<string, string> = url.endsWith("plain.tgz")
+        ? {}
+        : { "last-modified": date };
+      return new Response((url.endsWith("bad.tgz") ? other : tarball) as unknown as BodyInit, {
+        headers,
+      });
+    };
+    const told: [string, number][] = [];
+    const store = createStore({ dir, fetch, served: (i, at) => told.push([i, at]) });
+    await expect(store.add("https://reg/bad.tgz", hashOf(tarball))).rejects.toMatchObject({
+      code: "EINTEGRITY",
+    });
+    await store.add("https://reg/p.tgz", hashOf(tarball));
+    await store.add("https://reg/p.tgz", hashOf(tarball)); // in the store now: not downloaded
+    const plain = makeTarball([{ path: "b.js", data: "beta" }]);
+    await createStore({ dir, fetch: stubFetch(plain), served: (i, at) => told.push([i, at]) }).add(
+      "https://reg/plain.tgz",
+      hashOf(plain),
+    );
+    // Past `STREAM_MIN`, streamed to a worker as it lands.
+    const big = makeTarball([
+      { path: "c.txt", data: randomBytes(4.5 * 1024 * 1024).toString("base64") },
+    ]);
+    const streamed = createStore({
+      dir,
+      workers: 1,
+      served: (i, at) => told.push([i, at]),
+      fetch: async () =>
+        new Response(big as unknown as BodyInit, {
+          headers: { "content-length": String(big.byteLength), "last-modified": date },
+        }),
+    });
+    await streamed.add("https://reg/big.tgz", hashOf(big));
+    streamed.close();
+    expect(told).toEqual([
+      [hashOf(tarball), Date.parse(date)],
+      [hashOf(plain), NaN],
+      [hashOf(big), Date.parse(date)],
+    ]);
+  });
+
   it("holds tarballs against the ceiling and `held`, not against the size of the tree", async () => {
     // A download counts against the ceiling until its last byte, and its bytes against `held`
     // until they are written out as content. Downloading past both would queue whole tarballs

@@ -91,6 +91,12 @@ export interface StoreOptions {
   /** See `StoreBackend`; `backendFailed` is told once when it fails. */
   backend?: StoreBackend;
   backendFailed?: (error: unknown) => void;
+  /**
+   * Told, once its integrity has passed, the `last-modified` a downloaded tarball was served
+   * with, in epoch ms (NaN without one). npmjs serves its publish time, or a later one for an
+   * old tarball it has copied again since; a mirror may serve when it copied it.
+   */
+  served?: (integrity: string, at: number) => void;
 }
 
 export interface Store {
@@ -153,7 +159,7 @@ const STREAM_MIN = SHARD_MIN;
  * `unframed` bytes came with neither a length nor chunks, so only the connection's close ended
  * them, and a close too early looks the same as the end.
  */
-type Pulled = { size: number } & (
+type Pulled = { size: number; modified?: number } & (
   | { bytes: Uint8Array[]; unframed?: boolean }
   | { streamed: Promise<PackageIndex> }
 );
@@ -459,14 +465,19 @@ export function createStore(options: StoreOptions = {}): Store {
     held += pulled.size;
     try {
       // Held until the index is written, or the index writes would queue past the bound.
-      if ("streamed" in pulled) return await publish(integrity, await pulled.streamed, sources);
-      // The hash is checked where the unpack runs, so a worker takes that off this thread too.
-      const { bytes } = pulled;
-      const ready = offer ? (pool ?? (await loadPool())) : undefined;
-      const offered = ready?.offer(integrity, bytes, repair, behind);
-      trace("offer", { i: integrity, behind, taken: !!offered });
-      const index = await (offered ?? unpackHere(integrity, bytes, repair));
-      return await publish(integrity, index, sources);
+      let index: PackageIndex;
+      if ("streamed" in pulled) index = await publish(integrity, await pulled.streamed, sources);
+      else {
+        // The hash is checked where the unpack runs, so a worker takes that off this thread too.
+        const { bytes } = pulled;
+        const ready = offer ? (pool ?? (await loadPool())) : undefined;
+        const offered = ready?.offer(integrity, bytes, repair, behind);
+        trace("offer", { i: integrity, behind, taken: !!offered });
+        const unpacked = await (offered ?? unpackHere(integrity, bytes, repair));
+        index = await publish(integrity, unpacked, sources);
+      }
+      options.served?.(integrity, pulled.modified ?? NaN);
+      return index;
     } catch (error) {
       if ((error as { code?: string }).code !== "EINTEGRITY") throw error;
       // Cut short or not, nothing framed these bytes: they are worth one more download.
@@ -579,6 +590,7 @@ export function createStore(options: StoreOptions = {}): Store {
     }
     const body = response.body;
     if (!body) throw Object.assign(new Error("Tarball response had no body"), { code: "ENETWORK" });
+    const modified = Date.parse(response.headers.get("last-modified") ?? "");
     // A big tarball's blocks go to a worker as they land, when there is one to go to.
     const length = Number(response.headers.get("content-length"));
     // The first misses may still be loading the pool: a big one waits for it, its body buffering.
@@ -612,7 +624,7 @@ export function createStore(options: StoreOptions = {}): Store {
       sink?.abort();
       throw error;
     }
-    if (sink) return { streamed: sink.end(), size: got };
+    if (sink) return { streamed: sink.end(), size: got, modified };
     // Node's client shows the wire's headers; a browser's, or a `fetch` passed in, may not.
     const said = response.headers;
     const unframed =
@@ -620,7 +632,7 @@ export function createStore(options: StoreOptions = {}): Store {
       !options.fetch &&
       said.get("content-length") === null &&
       !/chunked/i.test(said.get("transfer-encoding") ?? "");
-    return { bytes, size: got, unframed };
+    return { bytes, size: got, unframed, modified };
   }
 
   const store: Store = {
